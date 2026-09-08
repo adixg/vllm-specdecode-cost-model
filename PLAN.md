@@ -41,16 +41,51 @@ Measure the memory breakdown of the baseline and of each k, then pin one KV
 budget all configs share. See "The confound" below -- this is the step that
 makes the rest of the experiment trustworthy.
 
-### Phase 2 -- correctness gate (not yet written)
-At temperature 0, speculative decoding is **output-equivalent** to plain
-decoding: the verification rule is constructed so the accepted sequence is
-exactly what the target model would have produced alone. So for the same prompts,
-baseline and spec-decode must emit **token-identical** output.
+### Phase 2 -- equivalence gate (done, PASSES)
 
-This is the single most important check in the project. If it fails, every
-throughput number afterwards is measuring something other than what we claim.
-A mismatch in the last token or two can be a stop-condition artifact; a mismatch
-at position 5 is a real bug and blocks the sweep.
+`bench/phase2_correctness.py`. At temperature 0 the verification rule guarantees
+the accepted sequence is what the target would have produced alone -- **in exact
+arithmetic**. In floating point that does *not* imply token-identical output,
+and the first version of this gate tested the wrong thing and reported a false
+failure.
+
+Why identity fails: the target scores k+1 candidate positions in ONE batched
+forward pass, whereas plain decoding scores one position per pass. Different
+batch shapes select different kernels and reduction orders, so logits differ in
+the last bits. At a near-tie that flips the argmax, and everything after it
+differs too.
+
+Measured (`results/phase2_correctness.json`):
+
+| k | token-identical | tie-break divergences |
+|---|---|---|
+| 1 | 5/6 | 1 |
+| 3 | 5/6 | 1 |
+| 5 | 1/6 | 5 |
+
+Every divergence sat at a top-2 logprob gap of **exactly 0.0000 or 0.1250 nats**.
+0.125 = 2^-3 is one bf16 quantisation step at these magnitudes, so the two
+candidates were either bit-identical or adjacent representable values. And the
+count rises with k exactly as the mechanism predicts: more verified positions
+per pass means more chances to land on a tie.
+
+**The corrected gate:** every divergence must occur at a numerical tie
+(top-2 gap <= 0.15 nats). A divergence where the model was confident is a real
+bug and blocks the sweep. This passes.
+
+Supporting controls, all in `results/`:
+- `determinism_baseline.json`, `determinism_spec-k3.json` -- each config
+  reproduces itself exactly across separate processes, so the divergences are
+  not run-to-run noise.
+- `phase2_investigate.json` -- baseline vs baseline, and baseline vs baseline
+  with logprobs requested, are identical; confirms that scoring the baseline
+  does not perturb it, and that the divergence position (prompt 0, token 72) is
+  stable.
+
+One methodological note recorded because it cost time: an early diagnostic
+compared a baseline run *with* logprobs against a spec run *without*, and its
+apparent instability was an artifact of that mismatch, not of the engine.
+Compare like with like, in one invocation.
 
 ### Phase 3 -- instrumentation (not yet written)
 Per run, extract from vLLM's spec-decode counters:

@@ -22,6 +22,10 @@ def main():
     ap.add_argument("--max-model-len", type=int, default=512)
     ap.add_argument("--max-tokens", type=int, default=128)
     ap.add_argument("--kv-bytes", type=int, default=None)
+    ap.add_argument("--only", type=int, default=None,
+                    help="run just this one prompt index (batch of 1)")
+    ap.add_argument("--logprobs", type=int, default=None,
+                    help="also emit top-N logprobs per generated position")
     a = ap.parse_args()
 
     kw = dict(model=a.target, gpu_memory_utilization=a.gmu,
@@ -34,9 +38,21 @@ def main():
 
     llm = LLM(**kw)
     # temperature=0 -> greedy; this is what makes the equivalence check valid.
-    sp = SamplingParams(max_tokens=a.max_tokens, temperature=0)
-    outs = llm.generate(PROMPTS, sp)
+    prompts = [PROMPTS[a.only]] if a.only is not None else PROMPTS
+    sp = SamplingParams(max_tokens=a.max_tokens, temperature=0,
+                        logprobs=a.logprobs)
+    outs = llm.generate(prompts, sp)
     print("TOKENS " + json.dumps([list(o.outputs[0].token_ids) for o in outs]))
+
+    if a.logprobs:
+        # per prompt: for each generated position, the top-N logprob values
+        lp = {}
+        for i, o in enumerate(outs):
+            steps = []
+            for d in (o.outputs[0].logprobs or []):
+                steps.append(sorted((v.logprob for v in d.values()), reverse=True))
+            lp[str(i)] = steps
+        print("LOGPROBS " + json.dumps(lp))
 
 
 if __name__ == "__main__":
