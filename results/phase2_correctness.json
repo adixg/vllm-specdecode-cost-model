@@ -18,8 +18,14 @@
     "gmu": 0.85,
     "max_model_len": 512,
     "max_tokens": 128,
-    "kv_bytes": 536519168,
+    "kv_bytes": 532324864,
     "tie_threshold": 0.15
+  },
+  "gpu_state": {
+    "free_mib": 7956,
+    "util_pct": 0,
+    "unloaded_ollama": [],
+    "required_mib": 6451
   },
   "tokens": {
     "baseline": [

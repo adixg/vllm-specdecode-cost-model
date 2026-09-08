@@ -154,77 +154,85 @@ worse under load, because it does not.
 
 Phase 4 must use `max_num_seqs` for its batch axis for the same reason.
 
-### Phase 4 -- the batch sweep (not yet written)
-Fixed workload, identical KV budget, sweeping batch size until the cache runs
-out. Baseline vs k in {1,3,5}, plus n-gram speculation as a second method that
-needs no draft model.
+### Phase 4 -- the batch sweep (done)
 
-Controls that matter:
-- **Identical token counts.** Force every request to emit exactly the same
-  number of tokens (`ignore_eos` + `min_tokens`), or batch composition changes
-  between configs and throughput is not comparable.
-- **Interleave runs.** This is a laptop GPU and it thermally throttles. Run
-  baseline and spec alternately rather than all of one then all of the other,
-  so drift does not get baked into the comparison.
-- **Never change two things at once.** Attention backend, dtype, and
-  `max_model_len` stay fixed for the entire sweep.
+`bench/phase4_sweep.py`. 48 requests x 128 tokens per point, `ignore_eos` so
+token counts are identical, every run pinned to the Phase 1 shared KV budget,
+batch axis driven by `max_num_seqs` with the workload held fixed, and configs
+interleaved within each batch size so thermal throttling cannot masquerade as a
+trend. Results in `results/phase4_sweep.json`.
 
-### Phase 5 -- analysis
-Speedup vs batch size per k and per method; acceptance rate vs batch size (the
-control -- it should be flat); per-position acceptance decay. Headline number is
-the **crossover point** where speedup crosses 1.0, with the roofline argument for
-why it lands there.
-
-## The confound Phase 1 exists to kill
-
-Measured on this machine, `gpu_memory_utilization=0.85`, `max_model_len=512`
-(`results/phase1_sizing.json`, reproduce with `python bench/phase1_sizing.py`):
-
-| config | KV tokens | KV GiB | weights GiB | peak act GiB | graphs GiB |
+| batch | baseline tok/s | draft k=1 | draft k=3 | draft k=5 | ngram k=3 |
 |---|---|---|---|---|---|
-| baseline | 99,664 | 2.66 | 3.65 | 0.48 | 0.47 |
-| spec k=1 | 28,128 | 1.07 | 4.06 | 1.66 | 0.56 |
-| spec k=3 | 28,224 | 1.08 | 4.07 | 1.65 | 0.55 |
-| spec k=5 | 28,480 | 1.09 | 4.07 | 1.64 | 0.54 |
+| 1 | 75.2 | 1.242x | **1.327x** | 1.143x | 0.909x |
+| 2 | 147.7 | 1.191x | 1.287x | 1.099x | 0.887x |
+| 4 | 291.4 | 1.140x | 1.155x | 1.067x | 0.844x |
+| 8 | 574.6 | 0.940x | 1.084x | 0.890x | 0.812x |
+| 16 | 1088.5 | 0.858x | 0.817x | 0.703x | 0.753x |
+| 32 | 1592.2 | 0.778x | 0.657x | 0.557x | 0.691x |
+| 48 | 2721.9 | 0.672x | **0.533x** | 0.392x | 0.612x |
 
-Same settings, and speculative decoding gets **3.5x less KV cache**. vLLM sizes
-the cache from what is left after weights, activation and graphs, so the config
-with the bigger activation footprint is silently starved. Left uncontrolled,
-this alone would produce the result we are trying to test -- spec decode falling
-off at high batch -- for entirely the wrong reason.
+**The phenomenon reproduces.** Speedup decays monotonically with batch size for
+every method and crosses below 1.0 -- speculation stops helping and starts
+hurting.
 
-Two things worth noting in that table:
+Crossover (first batch size where speedup <= 1.0):
 
-- The driver is **not** the draft weights (+0.41 GiB) but **peak activation,
-  0.48 -> 1.65 GiB**, because verification pushes k+1 tokens per sequence
-  through the target in a single pass.
-- **The cost is flat in k.** Activation is ~1.65 GiB whether k is 1, 3 or 5.
-  Enabling speculation at all is what costs the memory; the depth of the draft
-  is nearly free. So a single shared budget covers every k, and k does not need
-  its own envelope.
+| config | crossover |
+|---|---|
+| draft k=1 | batch 8 |
+| draft k=3 | **batch 16** |
+| draft k=5 | batch 8 |
+| ngram k=3 | never helps, even at batch 1 |
 
-### The shared budget
+### Phase 5 -- why the curve has this shape
 
-    kv_cache_memory_bytes = 536519168   # 0.50 GiB
+**The ceiling does not move; the realised fraction of it collapses.** Acceptance
+length -- the theoretical speedup if a verify step cost the same as a decode
+step -- is essentially constant across the sweep (k=3: 2.909 at batch 1, 2.978
+at batch 48). What changes is how much of it is realised:
 
-the minimum over all four configs. Every run in Phase 2 onward passes this.
+| batch | k=1 | k=3 | k=5 |
+|---|---|---|---|
+| 1 | 0.703 | 0.456 | 0.327 |
+| 8 | 0.529 | 0.371 | 0.238 |
+| 48 | 0.380 | 0.179 | 0.109 |
 
-**Equal bytes is not equal tokens**, and that is deliberate. The same budget buys
-~18,700 tokens for the baseline but only ~13,100 for spec decode, because the
-draft model needs its own KV cache out of the same allocation. That asymmetry is
-a genuine cost of the method and should stay visible; equalising *tokens* would
-hide it. The constraint it imposes is on the sweep: batch x sequence length must
-stay under the smaller (spec) capacity, or spec decode starts preempting while
-the baseline does not -- reintroducing the confound from the other direction.
+(efficiency = realised speedup / acceptance length)
 
-At 256 tokens per sequence that ceiling is ~51 concurrent sequences, so the
-sweep runs to **batch 48**.
+At batch 1, k=3 converts 46% of its ceiling into real throughput. At batch 48,
+18%. The draft model is guessing just as well -- it is simply that verification
+is no longer close to free.
 
-## Consequence: short sequences
+**The acceptance control holds.** Across an 48x change in concurrency,
+acceptance moves by 0.039 (k=1), 0.043 (k=3), 0.056 (k=5) -- flat. So the decay
+is *not* the draft model doing worse under load. It is the cost side: at batch 1
+the GPU is memory-bandwidth bound and idle while weights stream, so verifying
+k+1 candidates is nearly free; at batch 48 the weight read is amortised across
+many sequences, the step is compute bound, and the extra verification tokens,
+the draft model's own forward passes, and every rejected token are real FLOPs
+competing with useful work.
 
-Pinning to the worst case means a small shared cache, so long sequences would
-cap the batch sweep around 8 -- below where the crossover is expected. The
-experiment therefore uses **short sequences (128-token prompt, 128-token
-output)** to buy concurrency. This is legitimate: the phenomenon is about decode
-step economics, not context length. Testing long context would need a smaller
-target model instead, and is a separate experiment.
+**Deeper drafts cross over sooner.** k=5 has the highest ceiling (3.6x) and the
+worst curve -- 0.392x at batch 48 against k=3's 0.533x. More speculation means
+more wasted compute per rejected token, and the waste grows with k while the
+gain saturates. k=3 is the best choice at small batch and k=1 degrades most
+gracefully at large batch; k=5 is never the right answer here.
+
+**n-gram never pays off on this workload.** Its acceptance (~0.2-0.35) is too
+low to cover even its small cost, so it is below 1.0 everywhere.
+
+#### Caveats and loose ends
+
+- **n-gram acceptance is not flat** (spread 0.156: 0.202 at batch 1 rising to
+  0.350 at batch 48) while the draft-model configs are flat. The submitted
+  workload is identical at every point, so concurrency alone should not change
+  what an n-gram proposer finds in a request's own history. This is unexplained
+  and worth investigating before drawing any conclusion about n-gram.
+- Baseline throughput is still rising steeply at batch 48 (1592 -> 2722 tok/s
+  from 32 to 48), so the GPU is not yet saturated at the top of the sweep. The
+  KV budget, not the compute, is what caps the sweep here.
+- Single repeat per point (`--repeats 1`). The trend is far larger than any
+  plausible run-to-run noise, but error bars would need repeats.
+- One target/draft pair, one workload, 128-token outputs, one GPU. The shape of
+  the curve should generalise; the exact crossover batch will not.
