@@ -1,0 +1,273 @@
+{
+  "gpu_state": {
+    "free_mib": 7956,
+    "util_pct": 0,
+    "unloaded_ollama": [],
+    "required_mib": 6451
+  },
+  "rows": [
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": "Qwen/Qwen2.5-0.5B-Instruct",
+      "method": null,
+      "k": 1,
+      "batch": 8,
+      "max_num_seqs": null,
+      "max_tokens": 128,
+      "elapsed_s": 2.7341,
+      "generated_tokens": 1024,
+      "output_toks_per_s": 374.53,
+      "steps": 78,
+      "num_drafts": 576,
+      "num_draft_tokens": 576,
+      "num_accepted_tokens": 441,
+      "acceptance_rate": 0.765625,
+      "mean_acceptance_length": 1.765625,
+      "acceptance_per_pos": [
+        0.76562
+      ],
+      "conditional_acceptance_per_pos": [
+        0.76562
+      ],
+      "label": "draft-k1"
+    },
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": "Qwen/Qwen2.5-0.5B-Instruct",
+      "method": null,
+      "k": 3,
+      "batch": 8,
+      "max_num_seqs": null,
+      "max_tokens": 128,
+      "elapsed_s": 2.4835,
+      "generated_tokens": 1024,
+      "output_toks_per_s": 412.31,
+      "steps": 53,
+      "num_drafts": 351,
+      "num_draft_tokens": 1053,
+      "num_accepted_tokens": 670,
+      "acceptance_rate": 0.6362773029439696,
+      "mean_acceptance_length": 2.9088319088319086,
+      "acceptance_per_pos": [
+        0.76353,
+        0.64387,
+        0.50142
+      ],
+      "conditional_acceptance_per_pos": [
+        0.76353,
+        0.84328,
+        0.77876
+      ],
+      "label": "draft-k3"
+    },
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": "Qwen/Qwen2.5-0.5B-Instruct",
+      "method": null,
+      "k": 5,
+      "batch": 8,
+      "max_num_seqs": null,
+      "max_tokens": 128,
+      "elapsed_s": 2.7304,
+      "generated_tokens": 1024,
+      "output_toks_per_s": 375.03,
+      "steps": 46,
+      "num_drafts": 281,
+      "num_draft_tokens": 1405,
+      "num_accepted_tokens": 739,
+      "acceptance_rate": 0.5259786476868328,
+      "mean_acceptance_length": 3.6298932384341636,
+      "acceptance_per_pos": [
+        0.80783,
+        0.60498,
+        0.48754,
+        0.39502,
+        0.33452
+      ],
+      "conditional_acceptance_per_pos": [
+        0.80783,
+        0.7489,
+        0.80588,
+        0.81022,
+        0.84685
+      ],
+      "label": "draft-k5"
+    },
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": null,
+      "method": "ngram",
+      "k": 1,
+      "batch": 8,
+      "max_num_seqs": null,
+      "max_tokens": 128,
+      "elapsed_s": 3.3602,
+      "generated_tokens": 1024,
+      "output_toks_per_s": 304.74,
+      "steps": 83,
+      "num_drafts": 180,
+      "num_draft_tokens": 180,
+      "num_accepted_tokens": 75,
+      "acceptance_rate": 0.4166666666666667,
+      "mean_acceptance_length": 1.4166666666666667,
+      "acceptance_per_pos": [
+        0.41667
+      ],
+      "conditional_acceptance_per_pos": [
+        0.41667
+      ],
+      "label": "ngram-k1"
+    },
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": null,
+      "method": "ngram",
+      "k": 3,
+      "batch": 8,
+      "max_num_seqs": null,
+      "max_tokens": 128,
+      "elapsed_s": 3.1906,
+      "generated_tokens": 1024,
+      "output_toks_per_s": 320.95,
+      "steps": 81,
+      "num_drafts": 145,
+      "num_draft_tokens": 431,
+      "num_accepted_tokens": 79,
+      "acceptance_rate": 0.18329466357308585,
+      "mean_acceptance_length": 1.5448275862068965,
+      "acceptance_per_pos": [
+        0.34483,
+        0.14483,
+        0.05517
+      ],
+      "conditional_acceptance_per_pos": [
+        0.34483,
+        0.42,
+        0.38095
+      ],
+      "label": "ngram-k3"
+    },
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": null,
+      "method": "ngram",
+      "k": 5,
+      "batch": 8,
+      "max_num_seqs": null,
+      "max_tokens": 128,
+      "elapsed_s": 3.3466,
+      "generated_tokens": 1024,
+      "output_toks_per_s": 305.98,
+      "steps": 80,
+      "num_drafts": 115,
+      "num_draft_tokens": 565,
+      "num_accepted_tokens": 94,
+      "acceptance_rate": 0.1663716814159292,
+      "mean_acceptance_length": 1.8173913043478263,
+      "acceptance_per_pos": [
+        0.36522,
+        0.1913,
+        0.09565,
+        0.09565,
+        0.06957
+      ],
+      "conditional_acceptance_per_pos": [
+        0.36522,
+        0.52381,
+        0.5,
+        1.0,
+        0.72727
+      ],
+      "label": "ngram-k5"
+    }
+  ],
+  "flatness": [
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": "Qwen/Qwen2.5-0.5B-Instruct",
+      "method": null,
+      "k": 3,
+      "batch": 12,
+      "max_num_seqs": 1,
+      "max_tokens": 128,
+      "elapsed_s": 16.0139,
+      "generated_tokens": 1536,
+      "output_toks_per_s": 95.92,
+      "steps": 526,
+      "num_drafts": 526,
+      "num_draft_tokens": 1578,
+      "num_accepted_tokens": 1004,
+      "acceptance_rate": 0.6362484157160964,
+      "mean_acceptance_length": 2.908745247148289,
+      "acceptance_per_pos": [
+        0.77186,
+        0.64639,
+        0.49049
+      ],
+      "conditional_acceptance_per_pos": [
+        0.77186,
+        0.83744,
+        0.75882
+      ],
+      "label": "draft-k3-conc1"
+    },
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": "Qwen/Qwen2.5-0.5B-Instruct",
+      "method": null,
+      "k": 3,
+      "batch": 12,
+      "max_num_seqs": 2,
+      "max_tokens": 128,
+      "elapsed_s": 10.0621,
+      "generated_tokens": 1536,
+      "output_toks_per_s": 152.65,
+      "steps": 280,
+      "num_drafts": 527,
+      "num_draft_tokens": 1581,
+      "num_accepted_tokens": 1003,
+      "acceptance_rate": 0.6344086021505376,
+      "mean_acceptance_length": 2.903225806451613,
+      "acceptance_per_pos": [
+        0.7704,
+        0.64326,
+        0.48956
+      ],
+      "conditional_acceptance_per_pos": [
+        0.7704,
+        0.83498,
+        0.76106
+      ],
+      "label": "draft-k3-conc2"
+    },
+    {
+      "target": "Qwen/Qwen2.5-1.5B-Instruct",
+      "draft": "Qwen/Qwen2.5-0.5B-Instruct",
+      "method": null,
+      "k": 3,
+      "batch": 12,
+      "max_num_seqs": 8,
+      "max_tokens": 128,
+      "elapsed_s": 5.191,
+      "generated_tokens": 1536,
+      "output_toks_per_s": 295.9,
+      "steps": 90,
+      "num_drafts": 524,
+      "num_draft_tokens": 1572,
+      "num_accepted_tokens": 1015,
+      "acceptance_rate": 0.6456743002544529,
+      "mean_acceptance_length": 2.937022900763359,
+      "acceptance_per_pos": [
+        0.78435,
+        0.64885,
+        0.50382
+      ],
+      "conditional_acceptance_per_pos": [
+        0.78435,
+        0.82725,
+        0.77647
+      ],
+      "label": "draft-k3-conc8"
+    }
+  ]
+}

@@ -87,17 +87,72 @@ compared a baseline run *with* logprobs against a spec run *without*, and its
 apparent instability was an artifact of that mismatch, not of the engine.
 Compare like with like, in one invocation.
 
-### Phase 3 -- instrumentation (not yet written)
-Per run, extract from vLLM's spec-decode counters:
-- **acceptance rate** = accepted draft tokens / drafted tokens
-- **acceptance length** alpha = mean accepted tokens per verification step.
-  This is the theoretical speedup ceiling.
-- **per-position acceptance** -- how often draft token 1, 2, ... k survives.
-  It decays roughly geometrically and tells us the useful value of k.
+### Phase 3 -- instrumentation (done)
 
-Cross-check: measured speedup should be about alpha x (cost of a verify step
-relative to a plain decode step). Where those disagree, the gap *is* the
-overhead we are trying to characterise.
+`bench/phase3_metrics.py` + `bench/spec_probe.py`. vLLM tracks speculative
+counters per scheduler step in `SpecDecodingStats`
+(`vllm/v1/spec_decode/metrics.py`): `num_drafts`, `num_draft_tokens`,
+`num_accepted_tokens`, and per-draft-position accepted/drafted vectors. Those
+reach the frontend inside `SchedulerStats`, where stat loggers see them. The
+offline `LLM` API exposes no hook for custom loggers, so we attach one to
+`llm_engine.logger_manager` after construction; that needs
+`disable_log_stats=False`, since `LLM()` otherwise sets it True and
+`logger_manager` is None. Reading counters beats parsing log lines.
+
+Measured at 12 requests, 128 tokens each, shared KV budget
+(`results/phase3_metrics.json`):
+
+| config | accept rate | accept length | tok/s | per-position acceptance |
+|---|---|---|---|---|
+| draft k=1 | 0.766 | 1.766 | 374.5 | 0.766 |
+| draft k=3 | 0.636 | 2.909 | 412.3 | 0.764, 0.644, 0.501 |
+| draft k=5 | 0.526 | 3.630 | 375.0 | 0.808, 0.605, 0.488, 0.395, 0.335 |
+| ngram k=1 | 0.417 | 1.417 | 304.7 | 0.417 |
+| ngram k=3 | 0.183 | 1.545 | 321.0 | 0.345, 0.145, 0.055 |
+| ngram k=5 | 0.166 | 1.817 | 306.0 | 0.365, 0.191, 0.096, 0.096, 0.070 |
+
+**Acceptance decays geometrically, as the model predicts.** The conditional
+probability of accepting position i given i-1 was accepted is nearly constant
+for the draft model -- 0.808, 0.749, 0.806, 0.810, 0.847 at k=5 -- i.e. each
+additional draft token survives with roughly the same ~0.8 chance. The marginal
+rate therefore falls off as 0.8^i, which is why acceptance *length* keeps rising
+with k (1.77 -> 2.91 -> 3.63) while acceptance *rate* falls (0.766 -> 0.636 ->
+0.526). Those are not in conflict: deeper drafts win more tokens per round but
+waste a larger fraction of what they propose.
+
+**n-gram speculation is much weaker here** -- roughly 0.4 conditional acceptance
+against the draft model's 0.8, giving an acceptance length of only 1.4-1.8. It
+costs no GPU memory, but on this workload it proposes far worse continuations.
+Its k=5 per-position numbers are noisy (one position shows 1.000) because very
+few drafts reach that depth.
+
+**Acceptance length is the ceiling, not the outcome.** k=5 has the highest
+ceiling (3.63x) yet lower throughput than k=3 at this batch size. The gap
+between ceiling and realised speedup is exactly the overhead Phase 4 measures.
+
+#### The flatness control, and a methodological correction
+
+Acceptance is a property of the model pair, so it must not move with batch size.
+A first version of this control varied batch size by changing the NUMBER OF
+PROMPTS -- so batch 1 ran only prompt 0 while batch 8 ran all six. That measured
+a difference in prompt content and produced a spurious "acceptance is not flat"
+result (0.497 vs 0.636).
+
+Batch size must be varied with **`max_num_seqs`**, holding the submitted
+workload fixed, so that only concurrency changes. Corrected:
+
+| max_num_seqs | acceptance rate | acceptance length | tok/s |
+|---|---|---|---|
+| 1 | 0.6362 | 2.909 | 95.9 |
+| 2 | 0.6344 | 2.903 | 152.7 |
+| 8 | 0.6457 | 2.937 | 295.9 |
+
+Acceptance moves by 0.009 across an 8x change in concurrency while throughput
+triples. **This is the control the whole experiment rests on**: any decay in
+speedup that Phase 4 finds cannot be attributed to the draft model guessing
+worse under load, because it does not.
+
+Phase 4 must use `max_num_seqs` for its batch axis for the same reason.
 
 ### Phase 4 -- the batch sweep (not yet written)
 Fixed workload, identical KV budget, sweeping batch size until the cache runs

@@ -36,6 +36,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
+sys.path.insert(0, str(REPO / "bench"))
+from gpu_guard import ensure_free  # noqa: E402
+
 PROMPTS = [
     "Explain why the sky is blue in three sentences.",
     "Write a Python function that reverses a linked list.",
@@ -108,6 +111,8 @@ def main():
                          "covers one bf16 step (0.125) at these magnitudes.")
     a = ap.parse_args()
 
+    gpu_state = ensure_free()
+
     common = dict(gmu=a.gmu, max_model_len=a.max_model_len,
                   max_tokens=a.max_tokens, kv_bytes=a.kv_bytes)
 
@@ -115,7 +120,7 @@ def main():
     base, base_lp = run(a.target, None, None, logprobs=5, **common)
 
     real_bugs = 0
-    report = {"prompts": PROMPTS, "config": vars(a),
+    report = {"prompts": PROMPTS, "config": vars(a), "gpu_state": gpu_state,
               "tokens": {"baseline": base}, "results": {}}
     for k in a.ks:
         print(f"[phase2] spec k={k} ...", flush=True)

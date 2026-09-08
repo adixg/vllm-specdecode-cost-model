@@ -22,6 +22,7 @@ import argparse
 import subprocess
 import sys
 
+from gpu_guard import ensure_free
 from common import RESULTS, run_probe, save
 
 GIB = 1024 ** 3
@@ -47,6 +48,8 @@ def main():
     ap.add_argument("--ks", type=int, nargs="+", default=[1, 3, 5])
     a = ap.parse_args()
 
+    gpu_state = ensure_free()
+
     configs = [("baseline", None, None)]
     configs += [(f"spec-k{k}", a.draft, k) for k in a.ks]
 
@@ -68,7 +71,7 @@ def main():
 
     meta = {"gpu": gpu_info(), "target": a.target, "draft": a.draft,
             "gmu": a.gmu, "max_model_len": a.max_model_len,
-            "shared_kv_bytes": shared}
+            "shared_kv_bytes": shared, "gpu_state": gpu_state}
     path = save("phase1_sizing", rows, meta)
 
     print("\n| config | KV tokens | KV GiB | weights GiB | peak act GiB | graphs GiB |")
