@@ -1,0 +1,152 @@
+# Findings log
+
+Running record of what each experiment established, in order. Each entry states
+the question, the result, the mechanism, and what it does *not* show. Raw data
+is in `results/<name>.json`; the script that produced it is `bench/<name>.py`.
+
+Project context: testing whether vLLM's DSpark adaptive verification cost model
+— one-dimensional in total verification-token count, profiled once at startup
+against a fixed synthetic context length — is adequate under continuous batching
+with heterogeneous sequence lengths.
+
+Baseline throughout: `vllm==0.28.0`, Qwen3-1.7B (bf16, 28 layers, 8 KV heads,
+head_dim 128 → 112 KB KV per token), RTX 4060 Laptop (sm_89, ~7950 MB usable,
+~256 GB/s peak), WSL2. V2 GPU model runner. FLASH_ATTN backend.
+
+---
+
+## E1 — Is the exchangeable-token assumption violated?
+
+`bench/verify_cost_probe.py` → `results/verify_cost_probe.json`
+
+**Question.** vLLM prices a verification step with a curve
+`num_target_tokens -> forward_ms`, profiled at one synthetic context length
+(`VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN`, default 8192) and applied to
+every batch regardless of its actual context. Does context composition change
+step cost at fixed token count?
+
+**Result: yes, decisively.** At fixed verification-token count, step latency
+varies up to **3.7×** (275%) with context length alone, monotonically, across
+every token count from 16 to 512. Median within-cell replay spread was 2.2%
+over 7 replays — the effect is ~2 orders of magnitude above the noise floor.
+
+The stock 8192 baseline **overpredicts short-context batches by up to 73%**.
+Budget selection is `argmax(estimated_accepted / cost)`
+(`adaptive_verification.py:329`), so an inflated denominator makes vLLM
+**under-allocate verification budget exactly where speculation is cheapest**.
+
+**Mechanism: the cost surface is bytes-moved ÷ bandwidth, in two additive
+terms.**
+
+    cost ~= f(num_query_tokens) + k * sum(seq_lens)
+
+- The context term is *independent of token count* (~39 ms at ctx=8192 whether
+  verifying 16 tokens or 512) and *linear in context* (0.5 → 2 → 4.5 → 10 → 20
+  → 40 ms as ctx doubles).
+- Measured KV streaming rate is constant at **181 GB/s** (71% of peak) across
+  ctx=2048/4096/8192. Attention here does nothing but stream KV from DRAM.
+- The `ctx=0` floor is **weight streaming**: 1.72B params × 2 B = 3.44 GB read
+  in 14.38 ms = **239 GB/s**, near peak. That is why cost is flat at 14.4 ms for
+  n=16/32/64 — the forward pass is bound by reading its own weights and the
+  query tokens are free. It rises only at n≥128 as GEMM arithmetic starts to
+  matter.
+- Cross-check: 112 KB/token × 26,576-token pool = 2.84 GiB, exactly matching
+  vLLM's logged `Available KV cache memory: 2.84 GiB`.
+
+**Implication for the cost model.** The right feature is not mean or max
+context — it is **`sum(seq_lens)`**, because cost tracks aggregate bytes read.
+Two features (`num_tokens`, `sum(seq_lens)`) should suffice, as a linear fit
+that is trivial to evaluate in the scheduler and to update online. The
+mean/max/query-weighted ablation is predicted to come out flat.
+
+**What this does NOT show.**
+- *Uniform contexts only.* `set_dummy_context` applies one scalar to every
+  request, so this shows context *length* matters, not that its *distribution*
+  does.
+- *Piecewise/eager regime only.* Capture sizes came out `[1,2,4,8]` (capped by
+  `max_num_seqs=8`), so every cell ran above the cudagraph limit. The
+  graph-padded branch of the cost table is untested.
+- *One model, one GPU.* On an H100 with a larger model, arithmetic intensity
+  rises and the two terms will not separate this cleanly. The direction should
+  transfer; the shape may not.
+- KV blocks alias past the 26,576-token pool. Since 2.84 GiB is ~90× the 32 MB
+  L2 there is no meaningful reuse, so this biases high-context numbers only
+  slightly downward — the reported spread is a mild lower bound.
+
+---
+
+## E2 — Is marginal verification cost allocation-dependent?
+
+`bench/marginal_cost_probe.py` → `results/marginal_cost_probe.json`
+
+**Question.** The proposal's extension ranks each candidate draft token by
+expected survival benefit relative to its *marginal* verification cost. That
+assumes cost depends on *which* request receives an extra token. E1's model
+predicts it does not: the KV term depends on the seq_lens of the requests in
+the batch, and a request's KV is read in full whether it contributes one query
+token or seven.
+
+**Design.** Hold the request set, their contexts (hence total KV bytes), and
+the total query-token count all fixed; vary only which requests receive the
+spare tokens — all to long-context requests, all to short-context, or spread
+evenly.
+
+**Result: marginal cost is UNIFORM.** All configurations cost the same to
+within 0.21%, and the long-vs-short difference (0.15%) is *smaller than the
+drift control* (0.21%):
+
+    alloc                   query_lens  median_ms
+      even     [4, 4, 4, 4, 4, 4, 4, 4]     24.829
+      long     [7, 7, 7, 7, 1, 1, 1, 1]     24.823
+     short     [1, 1, 1, 1, 7, 7, 7, 7]     24.786
+    even#2     [4, 4, 4, 4, 4, 4, 4, 4]     24.777   <- drift control
+
+`long` vs `short` is the clean test: identical multiset of query lengths
+(hence identical `max_query_len` and token total), identical contexts,
+differing only in which requests own the long queries.
+
+**Cross-validation of E1.** All four land at 24.8 ms against E1's two-term
+prediction of **24.90 ms** — 0.4% error from a model fitted on entirely
+different batch shapes. Independent confirmation of
+`cost ~= f(num_tokens) + k * sum(seq_lens)`.
+
+**Implication.** The proposal's cost-aware per-request allocation extension has
+**no cost signal to exploit in this regime** — ranking draft slots by survival
+benefit per marginal cost degenerates to ranking by survival alone, because
+marginal cost is constant across slots. The mechanism is the one E1 identified:
+a request's KV is streamed in full whether it contributes one query token or
+seven, and KV streaming dominates. Recommend not implementing that extension
+until a regime is found where it does not degenerate; report it as a clean
+negative result instead. The global cost-model fix from E1 remains well
+motivated and is where the gain is.
+
+**Methodology note — this result required two attempts, and the first was
+wrong.** Warming each plan immediately before measuring it left per-shape
+compile/autotune cost inside the measurement window, and whichever plan ran
+first absorbed it. That produced a spurious 28% spread and an
+"allocation-dependent" verdict; the `even` cell visibly drifted
+`51.7 -> 31.9 -> ... -> 26.8` across its replays. Two changes fixed it:
+
+1. Warm **every** shape before timing **any** of them — each distinct
+   `max_query_len` triggers its own compile.
+2. **Interleave** rounds (one replay of each plan per round) rather than
+   running each plan to completion, so residual drift hits all plans equally.
+   Rounds 11-12 of the corrected run show a synchronized ~2 ms bump across all
+   four plans — a thermal/clock event that plan-at-a-time timing would have
+   charged to a single configuration.
+
+Any future timing experiment here must do both, and must carry a duplicate-cell
+drift control. Note that within-cell spread (9.4%) is *larger* than the effect
+being bounded (0.21%), so the duplicate control — not the within-cell spread —
+is what makes the null result credible.
+
+**What this does NOT show.**
+- *One batch composition* (4×4096 + 4×256, 32 query tokens). A regime with
+  much longer queries or a compute-bound GPU could surface a real allocation
+  effect, since attention QK work `sum(query_len * seq_len)` genuinely differs
+  5x between `long` and `short` here (115.9k vs 23.8k pairs) yet costs nothing
+  measurable — it is dwarfed by KV streaming on this bandwidth-starved part.
+  **This is the specific thing to re-test on an H100.**
+- Same eager/piecewise regime and same single model/GPU caveats as E1.
+
+---
