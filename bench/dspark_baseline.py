@@ -67,6 +67,10 @@ def main() -> int:
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--max-num-seqs", type=int, default=8)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.82)
+    p.add_argument("--attention-backend", default=None,
+                   help="e.g. TRITON_ATTN. Adaptive verification needs a backend "
+                        "reporting AttentionCGSupport.ALWAYS; FlashAttention only "
+                        "does so at FA3, which needs Hopper (sm_90+).")
     p.add_argument("--no-adaptive", action="store_true",
                    help="Fixed-length verification instead of adaptive (control).")
     p.add_argument("--num-prompts", type=int, default=16)
@@ -104,8 +108,13 @@ def main() -> int:
     }
     print(f"speculative_config = {json.dumps(spec)}")
 
+    extra = {}
+    if args.attention_backend:
+        extra["attention_backend"] = args.attention_backend
+
     llm = LLM(model=args.model,
               speculative_config=spec,
+              **extra,
               max_model_len=args.max_model_len,
               max_num_seqs=args.max_num_seqs,
               gpu_memory_utilization=args.gpu_memory_utilization,

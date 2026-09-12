@@ -1,0 +1,134 @@
+{
+  "generated_utc": "2026-09-12T20:40:57.038698+00:00",
+  "args": {
+    "model": "openbmb/MiniCPM5-2B",
+    "draft": "openbmb/MiniCPM5-2B-DSpark",
+    "num_speculative_tokens": 3,
+    "max_model_len": 2048,
+    "max_num_seqs": 8,
+    "gpu_memory_utilization": 0.82,
+    "attention_backend": "TRITON_ATTN",
+    "no_adaptive": false,
+    "num_prompts": 8,
+    "max_tokens": 48,
+    "out": "results/dspark_baseline.json"
+  },
+  "speculative_config": {
+    "method": "dspark",
+    "model": "openbmb/MiniCPM5-2B-DSpark",
+    "num_speculative_tokens": 3,
+    "enable_adaptive_verification": true
+  },
+  "adaptive_verification": {
+    "adaptive_verification_active": true,
+    "speculator": "DSparkSpeculator",
+    "profile_context_len": 8192,
+    "captured_token_counts": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32
+    ],
+    "num_speculative_steps": 3,
+    "cudagraph_limit": 32,
+    "verify_table_samples": [
+      [
+        1,
+        19.63315200805664
+      ],
+      [
+        2,
+        19.63315200805664
+      ],
+      [
+        4,
+        19.63315200805664
+      ],
+      [
+        8,
+        19.63315200805664
+      ],
+      [
+        16,
+        19.63315200805664
+      ],
+      [
+        32,
+        19.63315200805664
+      ],
+      [
+        64,
+        22.44710350036621
+      ],
+      [
+        128,
+        30.99648094177246
+      ],
+      [
+        256,
+        47.124481201171875
+      ],
+      [
+        512,
+        91.15443420410156
+      ],
+      [
+        1024,
+        181.7876434326172
+      ]
+    ],
+    "draft_table_samples": [
+      [
+        0,
+        7.023615837097168
+      ],
+      [
+        1,
+        7.023615837097168
+      ],
+      [
+        2,
+        7.023615837097168
+      ],
+      [
+        3,
+        7.023615837097168
+      ],
+      [
+        4,
+        7.023615837097168
+      ],
+      [
+        5,
+        7.023615837097168
+      ],
+      [
+        6,
+        7.023615837097168
+      ],
+      [
+        7,
+        7.023615837097168
+      ],
+      [
+        8,
+        7.023615837097168
+      ]
+    ],
+    "verify_table_len": 8193
+  },
+  "total_output_tokens": 384,
+  "metrics": {
+    "vllm:spec_decode_num_drafts": 156,
+    "vllm:spec_decode_num_draft_tokens": 468,
+    "vllm:spec_decode_num_accepted_tokens": 224,
+    "vllm:spec_decode_num_accepted_tokens_per_pos": [
+      112,
+      70,
+      42
+    ]
+  }
+}

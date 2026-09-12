@@ -177,6 +177,29 @@ it buys a correctly aligned toolchain, not speed.
 Do not change the attention backend partway through a batch-size sweep; treat it as
 a separate variable or the crossover point becomes uninterpretable.
 
+## Hardware constraint: adaptive verification needs Hopper, or a non-default backend
+
+`AdaptiveVerificationManager` captures varlen decode cudagraphs, so every
+attention builder must report `AttentionCGSupport.ALWAYS`. FlashAttention does
+so **only at FA3** (`flash_attn.py:356`), and FA3 requires sm_90+. This machine
+is sm_89, so vLLM loads FA2, which reports `UNIFORM_BATCH`, and startup fails:
+
+    ValueError: Adaptive verification captures varlen decode cudagraphs, so
+    every attention builder must report AttentionCGSupport.ALWAYS, but
+    FlashAttentionBackend reports AttentionCGSupport.UNIFORM_BATCH.
+
+Two backends do report `ALWAYS` and work here: **`TRITON_ATTN`** and
+**`FLEX_ATTENTION`**. Note that changing the backend changes step timings, so
+results taken under Triton are not comparable with the FLASH_ATTN experiments.
+
+**`VLLM_ATTENTION_BACKEND` does not exist in vLLM 0.28** — it is silently
+ignored, with no warning. Pass `attention_backend` to `LLM(...)` (or
+`--attention-backend` on the CLI) instead, and always confirm the log line
+
+    Using TRITON_ATTN attention backend out of potential backends: [...]
+
+reports the backend you asked for.
+
 ## Running `bench/verify_cost_probe.py`
 
     source env.sh
