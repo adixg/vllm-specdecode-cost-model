@@ -150,3 +150,82 @@ is what makes the null result credible.
 - Same eager/piecewise regime and same single model/GPU caveats as E1.
 
 ---
+
+## E5 — the CUDA-graph-padded regime, and replicating vLLM#52057's drift plot
+
+`bench/verify_cost_probe.py` (different arguments) + `bench/plot_drift.py`
+→ `results/reqs_sweep.json`, `results/reqs_sweep_dense.json`
+
+**Question.** E1 and E2 ran entirely *above* the cudagraph capture limit
+(capture sizes were `[1,2,4,8]` with `max_num_seqs=8`), so the step-function
+branch of the cost table was never exercised. Issue #52057 attributes the drift
+the maintainers observe specifically to cudagraph replay, so that regime had to
+be measured. Separately, #52057's own plot is the natural presentation format.
+
+**How to reach the regime — no new code needed.** `_dummy_run` derives
+`num_reqs = min(num_tokens, max_num_reqs)` (`model_runner.py:653`), so request
+count is not directly settable. Running with `--max-num-seqs 64` and token
+counts drawn from the captured sizes makes `num_reqs == num_tokens`: one token
+per request, the decode shape, entirely inside the captured range
+(`[1,2,4,8,16,24,32,40,48,56,64]`).
+
+**Result: the drift is far worse in the regime real serving occupies.**
+
+    n=  1: +53.6%     n= 16: +257.7%     n= 48: +720.8%
+    n=  8: +141.5%    n= 32: +533.2%     n= 64: +956.6%
+
+**9.6x at 64 requests**, against 3.7x in E1. The mechanism is E1's model: in the
+decode shape `sum(seq_lens) = num_reqs * context`, so both factors scale
+together. The profiler charges 64x8192 = 524k KV tokens; a real batch with
+256-token contexts reads 16k.
+
+**The `ctx=0` column is flat at ~14 ms for every request count from 1 to 64.**
+Request count costs essentially nothing by itself — the floor is weight
+streaming. All growth along the predicted axis is the profiler's *assumed*
+8192 context, not batch size. Third independent confirmation of
+`cost ~= f(num_tokens) + k * sum(seq_lens)`.
+
+**One cell underestimates.** `n=1, ctx=0` at **+17.3%** is the only point above
+the diagonal in 54 cells: at a single request, fixed per-step overhead stops
+being amortised and a curve fitted at 8192 underprices it.
+
+**Agreement statistics** (dense sweep, n=2,695 — matching #52057's n=2,706):
+
+    bias = -42.300 ms    MAE = 42.314 ms    RMSE = 57.170 ms    r = 0.475
+
+`MAE ~= |bias|` means nearly every error carries the same sign: vLLM
+overestimates almost everywhere. A consistently-signed error implies a
+correctable systematic term rather than irreducible variance.
+
+**Comparison with #52057's published plot.**
+
+    metric      #52057      this work
+    n            2,706        2,695
+    bias         2.353 ms    -42.300 ms
+    RMSE         2.599 ms     57.170 ms
+    r            0.998        0.475
+
+The *format* is replicated (hexbin, log10(count) colour, diagonal, stats box);
+the *statistics* deliberately are not, and cannot be with this harness. Theirs
+isolates cudagraph-replay drift at matched sequence length — a near-perfect
+predictor with mild error, exactly as their issue describes. Ours varies
+context away from the profiled value, which is the *second*, still-open
+mechanism their issue names. **On the same axes and units, the context effect
+is roughly 20x larger than the replay drift that motivated the issue.** That
+contrast is the most compelling single presentation of this project's premise.
+
+Note also that as read off their figure, `bias = 2.353` with `MAE = 0.2353` is
+not internally possible: MAE >= |bias| always. One of those values is likely
+misread; do not quote them without re-checking the source image.
+
+**What this does NOT show.**
+- Reproducing their *statistics* needs vLLM's own startup profiling compared
+  against real generation steps (i.e. E3), not our dummy runs with a curve we
+  fit ourselves. In this harness the ctx=8192 cells have zero error *by
+  construction*, since Phase A defines the curve from them.
+- KV blocks alias heavily at the high end (64x8192 = 524k nominal vs a
+  23,984-token pool), biasing high-context costs downward. The high-end ratios
+  are less precisely grounded than the low-end ones.
+- Same single model / single GPU caveat as E1 and E2.
+
+---
