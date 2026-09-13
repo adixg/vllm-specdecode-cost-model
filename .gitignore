@@ -2,3 +2,6 @@
 cuda-shim/
 __pycache__/
 *.pyc
+
+# Local drafts (email/PR text), not project artifacts
+notes/
