@@ -1,0 +1,16 @@
+(EngineCore pid=3344727) Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
+(EngineCore pid=3344727) Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:02<00:02,  2.03s/it]
+(EngineCore pid=3344727) Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:02<00:00,  1.01s/it]
+(EngineCore pid=3344727) 
+(EngineCore pid=3344727) Capturing CUDA graphs (PIECEWISE):   0%|          | 0/5 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):  20%|██        | 1/5 [00:00<00:03,  1.16it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 5/5 [00:00<00:00,  6.49it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 5/5 [00:00<00:00,  5.09it/s]
+(EngineCore pid=3344727) Capturing CUDA graphs (FULL):   0%|          | 0/4 [00:00<?, ?it/s]Capturing CUDA graphs (FULL): 100%|██████████| 4/4 [00:00<00:00, 53.25it/s]
+(EngineCore pid=3373319) Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
+(EngineCore pid=3373319) Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:01<00:01,  1.50s/it]
+(EngineCore pid=3373319) Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  1.34it/s]
+(EngineCore pid=3373319) 
+(EngineCore pid=3373319) Capturing CUDA graphs (PIECEWISE):   0%|          | 0/19 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):  16%|█▌        | 3/19 [00:00<00:00, 22.22it/s]Capturing CUDA graphs (PIECEWISE):  32%|███▏      | 6/19 [00:00<00:00, 22.93it/s]Capturing CUDA graphs (PIECEWISE):  47%|████▋     | 9/19 [00:00<00:00, 22.20it/s]Capturing CUDA graphs (PIECEWISE):  63%|██████▎   | 12/19 [00:00<00:00, 22.63it/s]Capturing CUDA graphs (PIECEWISE):  79%|███████▉  | 15/19 [00:00<00:00, 22.93it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 19/19 [00:00<00:00, 26.29it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 19/19 [00:00<00:00, 24.38it/s]
+(EngineCore pid=3373319) Capturing CUDA graphs (FULL):   0%|          | 0/11 [00:00<?, ?it/s]Capturing CUDA graphs (FULL):  55%|█████▍    | 6/11 [00:00<00:00, 54.33it/s]Capturing CUDA graphs (FULL): 100%|██████████| 11/11 [00:00<00:00, 55.70it/s]
+Traceback (most recent call last):
+  File "/home/hice1/aghosh367/vllm-specdecode-cost-model/bench/plot_drift.py", line 22, in <module>
+    import matplotlib
+ModuleNotFoundError: No module named 'matplotlib'
