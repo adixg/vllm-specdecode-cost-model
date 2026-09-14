@@ -15,6 +15,25 @@ head_dim 128 → 112 KB KV per token), RTX 4060 Laptop (sm_89, ~7950 MB usable,
 
 ---
 
+
+## Summary
+
+| | Question | What varied | Result |
+|---|---|---|---|
+| **E1** | Does context change step cost at a fixed token count? | `num_tokens` 16-512 x `context_len` 0-8192, `num_reqs` pinned at 8 | **3.7x** spread (laptop) |
+| **E2** | Does cost depend on *which* request gets the extra tokens? | ownership of the spare draft tokens only | **0.21%** - no |
+| **E3** | Does stock DSpark run, and does the manager engage? | nothing; feasibility check | yes, 47.9% acceptance |
+| **E5** | E1 again, but inside the CUDA-graph regime | `num_reqs` 1-64 (= `num_tokens`) x context | **9.6x** spread (laptop) |
+| **E6** | E1 and E5 on production hardware (H100, FA3) | same sweeps, real GPU, no KV aliasing | **7.8x** graphed, **~1%** eager |
+
+E4 was planned - fit and validate the two-term model on controlled
+heterogeneous batches - and has not been run.
+
+Sections below are in experiment order. Numbering is historical, not
+chronological: E5 was run before E3.
+
+---
+
 ## E1 — Is the exchangeable-token assumption violated?
 
 `bench/verify_cost_probe.py` → `results/verify_cost_probe.json`
@@ -74,7 +93,6 @@ mean/max/query-weighted ablation is predicted to come out flat.
   slightly downward — the reported spread is a mild lower bound.
 
 ---
-
 ## E2 — Is marginal verification cost allocation-dependent?
 
 `bench/marginal_cost_probe.py` → `results/marginal_cost_probe.json`
@@ -150,7 +168,72 @@ is what makes the null result credible.
 - Same eager/piecewise regime and same single model/GPU caveats as E1.
 
 ---
+## E3 — stock DSpark reproduced end to end
 
+`bench/dspark_baseline.py` → `results/dspark_baseline.json`
+
+**Question.** E1, E2 and E5 all ran with *no speculator*, so
+`AdaptiveVerificationManager` never actually executed — they measured the cost
+surface it prices, not the manager pricing it. Does stock DSpark run, does the
+manager engage, and does the curve it profiles match what E1 predicts?
+
+**Result: yes.** With `openbmb/MiniCPM5-2B` + `openbmb/MiniCPM5-2B-DSpark`:
+
+    adaptive verification : True          speculator : DSparkSpeculator
+    spec steps            : 3             profile ctx len : 8192
+    cudagraph capture     : [1, 2, 4, 8, 16, 24, 32]   limit 32
+
+    verify cost table (tokens -> ms)      draft cost table (reqs -> ms)
+        1 ->  19.633    64 ->  22.447         0..8 -> 7.024 (flat)
+        2 ->  19.633   256 ->  47.124
+        8 ->  19.633  1024 -> 181.788
+       32 ->  19.633
+
+Real generation produced 384 output tokens with healthy speculation:
+
+    drafts 156 | draft tokens 468 | accepted 224 -> 47.9%
+    accepted per position [112, 70, 42] -> 71.8% / 44.9% / 26.9%
+    = 1.44 accepted tokens per draft
+
+**The profiled table confirms E1 and E5 from vLLM's own profiler.** It is
+**flat at 19.633 ms from 1 token to 32** — vLLM believes a 1-token step and a
+32-token step cost the same. Both causes are this project's thesis: below the
+cudagraph limit cost is a step function, and every profiling run assumed 8192
+tokens of context, which swamps the token count. E5 measured the real range at
+that shape as ~14 ms (ctx=0) to ~147 ms (ctx=8192). vLLM has one number for it.
+
+**A second, subtler signal.** `build_cost_tables_from_curves` applies
+`np.maximum.accumulate` to force a non-decreasing curve. A perfectly flat run
+of 19.633 across 1..32 means the raw measurements were **not** monotonic —
+smaller sizes profiled *slower* than larger ones and the clamp flattened them.
+That is direct evidence of the noisy small-size profiling #52057 complains
+about, visible in the shipped code path rather than in our harness.
+
+### Three obstacles, worth recording
+
+1. **Qwen3.5 DSpark drafts cannot load at all** (unreported vLLM bug):
+   `speculative.py` rewrites any `qwen3_5*` draft to `Qwen3_5MTP`, overwriting
+   the checkpoint's declared `Qwen3DSparkModel`, which then falls through to
+   the DeepSeek-V4 DSpark class and dies on `AttributeError: ... 'hc_mult'`.
+   `openbmb/MiniCPM5-2B-DSpark` (`model_type=qwen3`) dodges the remap.
+2. **Adaptive verification requires Hopper+ if using FlashAttention.**
+   `flash_attn.py:356` reports `AttentionCGSupport.ALWAYS` only at FA3, which
+   needs sm_90+. On sm_89 vLLM loads FA2 (`UNIFORM_BATCH`) and the manager
+   refuses to initialise. Workarounds: `TRITON_ATTN` or `FLEX_ATTENTION`.
+3. **`VLLM_ATTENTION_BACKEND` no longer exists in 0.28** and is silently
+   ignored. Use the `attention_backend` config field. Always confirm the
+   "Using X attention backend" log line reflects what you asked for.
+
+**What this does NOT show.**
+- Obstacle 2 forced **TRITON_ATTN**, while E1/E2/E5 used FLASH_ATTN, so these
+  timings are *not* directly comparable to the earlier experiments.
+- Different model (MiniCPM5-2B vs Qwen3-1.7B), `max_model_len 2048`, and a tiny
+  8-prompt workload. This is a smoke test proving the path works, not a
+  baseline for publication.
+- Obstacle 2 also means a production-representative baseline needs Hopper+
+  hardware, where FA3 is available and the backend matches deployment.
+
+---
 ## E5 — the CUDA-graph-padded regime, and replicating vLLM#52057's drift plot
 
 `bench/verify_cost_probe.py` (different arguments) + `bench/plot_drift.py`
@@ -230,69 +313,85 @@ misread; do not quote them without re-checking the source image.
 
 ---
 
-## E3 — stock DSpark reproduced end to end
+## E6 — the same sweeps on production hardware (H100, FA3)
 
-`bench/dspark_baseline.py` → `results/dspark_baseline.json`
+`pace/run_h100.sbatch` → `results/h100_e1.json`, `results/h100_e5.json`
 
-**Question.** E1, E2 and E5 all ran with *no speculator*, so
-`AdaptiveVerificationManager` never actually executed — they measured the cost
-surface it prices, not the manager pricing it. Does stock DSpark run, does the
-manager engage, and does the curve it profiles match what E1 predicts?
+**Question.** Every earlier number came from a bandwidth-starved laptop GPU
+running FA2 (or, for E3, a forced TRITON_ATTN backend), with a KV pool too
+small to avoid block aliasing. Does the two-term model survive on hardware
+where compute is not free and the measurement is clean?
 
-**Result: yes.** With `openbmb/MiniCPM5-2B` + `openbmb/MiniCPM5-2B-DSpark`:
+**Setup.** PACE `ice-gpu` H100, compute capability 9.0, so vLLM selects
+**FlashAttention 3** on its own — the configuration adaptive verification
+requires and production uses. KV cache **567,584 tokens** against a largest
+cell of 524,288, so **no aliasing**: unlike the laptop runs, these reads are
+all real DRAM traffic.
 
-    adaptive verification : True          speculator : DSparkSpeculator
-    spec steps            : 3             profile ctx len : 8192
-    cudagraph capture     : [1, 2, 4, 8, 16, 24, 32]   limit 32
+**Result: the model survives, and `k` is far cleaner than on the laptop.**
 
-    verify cost table (tokens -> ms)      draft cost table (reqs -> ms)
-        1 ->  19.633    64 ->  22.447         0..8 -> 7.024 (flat)
-        2 ->  19.633   256 ->  47.124
-        8 ->  19.633  1024 -> 181.788
-       32 ->  19.633
+    n     delta_ms(ctx 0->8192)   KV tokens    k (us/tok)   implied GB/s
+     4            1.174             32,768       0.0358        3,201
+    16            4.734            131,072       0.0361        3,175
+    32            9.389            262,144       0.0358        3,202
+    64           18.578            524,288       0.0354        3,237
 
-Real generation produced 384 output tokens with healthy speculation:
+`k` is **constant to +/-1%** across a 16x range of batch sizes at
+**0.0356 us per KV token**, implying **3,221 GB/s** — about 96% of the H100
+SXM's 3,350 GB/s peak. The laptop's apparent 2x variation in `k` was an
+artifact of cache aliasing plus a small GPU failing to saturate bandwidth; on
+clean hardware `k` is a scalar, which keeps the proposed improvement simple.
 
-    drafts 156 | draft tokens 468 | accepted 224 -> 47.9%
-    accepted per position [112, 70, 42] -> 71.8% / 44.9% / 26.9%
-    = 1.44 accepted tokens per draft
+**The decisive finding: the effect is gated on CUDA graphs.**
 
-**The profiled table confirms E1 and E5 from vLLM's own profiler.** It is
-**flat at 19.633 ms from 1 token to 32** — vLLM believes a 1-token step and a
-32-token step cost the same. Both causes are this project's thesis: below the
-cudagraph limit cost is a step function, and every profiling run assumed 8192
-tokens of context, which swamps the token count. E5 measured the real range at
-that shape as ~14 ms (ctx=0) to ~147 ms (ctx=8192). vLLM has one number for it.
+    E1 (8 requests, eager)       +0.7% to +2.5%
+    E5 (n requests, graphed)     up to +780%
 
-**A second, subtler signal.** `build_cost_tables_from_curves` applies
-`np.maximum.accumulate` to force a non-decreasing curve. A perfectly flat run
-of 19.633 across 1..32 means the raw measurements were **not** monotonic —
-smaller sizes profiled *slower* than larger ones and the clamp flattened them.
-That is direct evidence of the noisy small-size profiling #52057 complains
-about, visible in the shipped code path rather than in our harness.
+Same GPU, same model, same contexts. E1's capture sizes were `[1,2,4,8]` so
+every cell ran eager; E5's reached 64 so every cell replayed a graph. At equal
+token counts:
 
-### Three obstacles, worth recording
+    n      E1 (eager)    E5 (graphed)
+    32       8.543 ms       2.167 ms
+    64       8.349 ms       2.382 ms
 
-1. **Qwen3.5 DSpark drafts cannot load at all** (unreported vLLM bug):
-   `speculative.py` rewrites any `qwen3_5*` draft to `Qwen3_5MTP`, overwriting
-   the checkpoint's declared `Qwen3DSparkModel`, which then falls through to
-   the DeepSeek-V4 DSpark class and dies on `AttributeError: ... 'hc_mult'`.
-   `openbmb/MiniCPM5-2B-DSpark` (`model_type=qwen3`) dodges the remap.
-2. **Adaptive verification requires Hopper+ if using FlashAttention.**
-   `flash_attn.py:356` reports `AttentionCGSupport.ALWAYS` only at FA3, which
-   needs sm_90+. On sm_89 vLLM loads FA2 (`UNIFORM_BATCH`) and the manager
-   refuses to initialise. Workarounds: `TRITON_ATTN` or `FLEX_ATTENTION`.
-3. **`VLLM_ATTENTION_BACKEND` no longer exists in 0.28** and is silently
-   ignored. Use the `attention_backend` config field. Always confirm the
-   "Using X attention backend" log line reflects what you asked for.
+E1's base cost is **flat at ~8.2 ms from 32 tokens to 512** — a 16x increase in
+work at constant time. That is CPU kernel-launch overhead, not GPU work, and
+it is large enough to absorb the KV reads entirely: at n=512, ctx=8192 the
+two-term model predicts 10.49 ms and the measured value is 8.14 ms, unchanged
+from ctx=0.
+
+So cost is **not simply additive**. The KV term is visible only once it exceeds
+whatever else bottlenecks the step:
+
+- H100 + graphs (base ~2 ms): 18 ms of KV reads dominate → 780%
+- H100 + eager (base ~8 ms of launch overhead): 2 ms of KV reads hide → ~0%
+- Laptop + eager (base ~14 ms): 17 ms of KV reads still dominate → 275%
+
+All three are consistent. **Production serving uses CUDA graphs**, so the
+regime where vLLM's cost model is blindest is the regime that matters.
+
+**Implication for the implementation.** A correction of the form
+`table[n] + k * sum(seq_lens)` would over-predict in eager mode, where the KV
+reads are free. Something closer to `max(table[n], base + k * sum(seq_lens))`
+may be needed. Both regimes are now measured, so this is directly testable.
+
+**Agreement statistics** against #52057's published figure:
+
+    run           n       bias       MAE      RMSE       r
+    h100_e1     630     -0.342     0.357     0.518    0.992
+    h100_e5   2,695     -5.640     5.640     7.978    0.498
+    #52057    2,706      2.353    0.2353     2.599    0.998
+
+h100_e1 closely resembles their figure (r=0.992 vs 0.998): in that regime the
+one-dimensional model genuinely works. h100_e5 is where it collapses. Note
+these remain not strictly comparable — our predicted values are fitted from our
+own dummy runs, theirs come from vLLM's startup profile measured against real
+steps. `bench/step_trace.py` addresses that.
 
 **What this does NOT show.**
-- Obstacle 2 forced **TRITON_ATTN**, while E1/E2/E5 used FLASH_ATTN, so these
-  timings are *not* directly comparable to the earlier experiments.
-- Different model (MiniCPM5-2B vs Qwen3-1.7B), `max_model_len 2048`, and a tiny
-  8-prompt workload. This is a smoke test proving the path works, not a
-  baseline for publication.
-- Obstacle 2 also means a production-representative baseline needs Hopper+
-  hardware, where FA3 is available and the backend matches deployment.
+- One model (Qwen3-1.7B) on one GPU generation.
+- Still synthetic `_dummy_run` batches, not real serving.
+- Uniform contexts within a batch; heterogeneity across requests is untested.
 
 ---
