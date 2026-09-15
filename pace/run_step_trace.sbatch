@@ -6,11 +6,15 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=00:10:00
+#SBATCH --time=00:30:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
 set -euo pipefail
+
+# Walltime note: importing torch + vLLM from Lustre with a cold page cache took
+# 7.5 minutes on the first attempt, which blew a 10-minute limit before the
+# engine had even started. Budget ~8 min imports + ~3 min engine init + the run.
 
 # --- 1. Refuse to run on the wrong hardware -------------------------------
 echo "=== GPU ==="
