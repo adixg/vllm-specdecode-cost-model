@@ -50,9 +50,17 @@ every token count from 16 to 512. Median within-cell replay spread was 2.2%
 over 7 replays — the effect is ~2 orders of magnitude above the noise floor.
 
 The stock 8192 baseline **overpredicts short-context batches by up to 73%**.
-Budget selection is `argmax(estimated_accepted / cost)`
-(`adaptive_verification.py:329`), so an inflated denominator makes vLLM
-**under-allocate verification budget exactly where speculation is cheapest**.
+
+**Correction (added after E4).** This entry originally claimed the inflated
+denominator makes vLLM *under*-allocate. That was asserted, never tested, and
+is wrong in sign. Budget selection is `argmax(estimated_accepted / cost)`
+(`adaptive_verification.py:329`), and a ratio's argmax is **invariant to any
+purely multiplicative error** — scaling every candidate's cost by 1.73 changes
+nothing. What the context mispricing actually produces is a *constant offset*,
+`k * (num_reqs * 8192 - sum(seq_lens))`, identical across candidate budgets.
+A positive offset inflates the fixed part of the cost, which makes marginal
+draft tokens look relatively cheap, so vLLM **over**-allocates. See the
+simulation under E7.
 
 **Mechanism: the cost surface is bytes-moved ÷ bandwidth, in two additive
 terms.**
@@ -454,5 +462,52 @@ still one scalar and one subtraction. The manager already knows
 - No end-to-end serving benefit is demonstrated — only prediction accuracy.
   Whether better predictions produce better throughput is the oracle-bound
   question, still open.
+
+---
+
+## E7 — does the mispricing actually change the decision?
+
+`bench/decision_impact.py` (simulation, no GPU)
+
+**Question.** E1–E6 measured prediction *error*. That is not the same as a
+worse *decision*, and the distinction had been glossed over. Budget selection
+is `argmax_B accepted(B) / cost(B)`, and **the argmax of a ratio is invariant
+to any purely multiplicative error**: scaling every candidate's cost by 1.73
+changes nothing at all. So "vLLM overpredicts by 73%" does not by itself imply
+a wrong choice.
+
+**What the error actually looks like.** The context mispricing is not a scale
+factor but a **constant offset**, the same for every candidate budget:
+
+    offset = k * (num_reqs * 8192 - sum(seq_lens))
+
+An offset *does* move the argmax, and in the opposite direction to intuition:
+inflating the fixed part of the cost makes marginal draft tokens look
+relatively cheap, so vLLM **over**-commits verification.
+
+**Result.**
+
+     reqs    ctx  offset ms  true B  vLLM B  rate lost
+        8    256      +2.26      23      24      0.12%
+       16    256      +4.52      44      48      0.54%
+       32    256      +9.04      67      96      3.48%
+       64    256     +18.08      76     191     11.29%
+
+The loss scales with `num_reqs * (profiled_ctx - real_ctx)`, since that
+product is the size of the offset. **Negligible for small batches, material
+for large ones** — and large batches with short contexts are exactly the
+high-throughput serving regime.
+
+**This corrects E1.** That entry claimed the mispricing makes vLLM
+*under*-allocate. The sign is wrong, and the claim was never tested. The
+direction is over-allocation, and the magnitude depends on batch size in a way
+the original framing did not capture.
+
+**What this does NOT show.** It is a **simulation, not a measurement**:
+survival probabilities are drawn from a distribution matched to E3's observed
+acceptance rates, and the marginal cost per verified token is assumed. It
+bounds the plausible size of the effect and motivates the real oracle bound —
+replaying actual logged decisions against measured true step times — which
+remains the outstanding piece of work.
 
 ---
