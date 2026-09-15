@@ -395,3 +395,64 @@ steps. `bench/step_trace.py` addresses that.
 - Uniform contexts within a batch; heterogeneity across requests is untested.
 
 ---
+
+## E4 — which functional form should the correction use?
+
+`bench/fit_cost_model.py` → fits on `results/h100_e1.json` + `results/h100_e5.json`
+
+**Question.** E6 showed KV-read time is visible only when it exceeds the
+per-step floor. Two forms follow:
+
+    additive:  cost = floor + k * S
+    max-like:  cost = max(floor, k * S)
+
+with `S = num_reqs * context_len` and `floor` the measured cost of the same
+batch shape at zero context. The decisive test is to fit **one k across both
+regimes**: k is a property of the model and GPU, not of the execution mode, so
+a single value must explain graphed and eager data alike. Contexts 1024 and
+4096 were held out of fitting entirely. No GPU needed.
+
+**Result: neither form wins outright — each wins in its own regime.**
+
+        model     fitted k   train RMSE  test RMSE   graphed    eager
+        stock            -        6.666      5.779     7.174    0.530
+     additive    0.0346 us        0.602      0.496     0.096    0.824
+          max    0.0426 us        0.626      0.879     1.091    0.072
+
+Additive beats max-like by 11x on graphed steps; max-like beats additive by
+11x on eager steps. **The correct model is regime-aware**, not one equation.
+That matches the mechanism: with CUDA graphs there is no launch slack for KV
+reads to hide in, so they add; in eager mode the GPU idles waiting on the CPU
+and absorbs them.
+
+**The result that validates the whole approach.** Additive's fitted
+**k = 0.0346 us/KV-token** against **0.0356** derived independently from KV
+bytes per token divided by measured bandwidth — a **3% match** between a
+least-squares fit to latency data and arithmetic over a model config and a
+hardware datasheet. Max-like's fitted k is 20% off, further evidence it is the
+wrong form in the regime that dominates the data.
+
+**Headline.** On held-out context lengths, prediction error falls from
+**5.779 ms (vLLM today)** to **0.496 ms** — an **11.6x reduction from one
+scalar term**.
+
+**Implementation note.** The `floor` used here is the measured cost at
+`ctx=0`, but vLLM's shipped table is profiled at `ctx=8192` and therefore
+already contains the KV cost of `num_reqs * 8192`. A real correction must be
+relative to that baseline:
+
+    corrected = table[n] + k * (sum(seq_lens) - num_reqs * 8192)
+
+still one scalar and one subtraction. The manager already knows
+`full_cudagraph`, so the regime gate needs no new plumbing.
+
+**What this does NOT show.**
+- Fitted on synthetic `_dummy_run` batches with uniform context per batch, on
+  one model and one GPU. Heterogeneous per-request contexts are untested.
+- `floor` is taken from measurement rather than modelled; a deployed version
+  must derive it from the existing profiled table.
+- No end-to-end serving benefit is demonstrated — only prediction accuracy.
+  Whether better predictions produce better throughput is the oracle-bound
+  question, still open.
+
+---
