@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=00:50:00
+#SBATCH --time=01:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
@@ -65,6 +65,23 @@ python bench/step_trace.py \
     --max-tokens 128 \
     --prompt-tokens 64 512 2048 \
     --out results/h100_step_trace.json || { echo "STEP TRACE FAILED"; STATUS=1; }
+
+# --- C. does a corrected cost model make serving faster? -------------------
+# The deciding experiment. Cost accuracy has exactly one consumer - the argmax
+# in get_num_tokens - so a better estimate is worth nothing unless it changes
+# the chosen budget AND that change is worth something. The corrected model is
+# within 0.8% of measured cost (E8), so this doubles as the oracle bound.
+echo
+echo "=== C. serving A/B ($(date +%T)) ==="
+python bench/serving_ab.py \
+    --model openbmb/MiniCPM5-2B \
+    --draft openbmb/MiniCPM5-2B-DSpark \
+    --max-num-seqs 64 \
+    --num-prompts 64 \
+    --max-tokens 128 \
+    --prompt-tokens 64 512 2048 \
+    --rounds 6 \
+    --out results/h100_serving_ab.json || { echo "SERVING AB FAILED"; STATUS=1; }
 
 # --- B. does the error change sign above the 8192 profiling point? ----------
 # Contexts straddle 8192: three below, three above. 16 reqs x 32768 = 524,288
