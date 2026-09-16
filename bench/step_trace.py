@@ -30,12 +30,22 @@ import os
 import statistics
 import sys
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Only for the type checker and for editor navigation. `self` below is the
+    # vLLM Worker, injected at runtime by collective_rpc, so without this an
+    # LSP cannot resolve self.model_runner and "go to definition" does nothing.
+    # `from __future__ import annotations` keeps these annotations as strings,
+    # so nothing here is imported or evaluated when the function is pickled and
+    # shipped to the worker process.
+    from vllm.v1.worker.gpu_worker import Worker
 
 
 # --------------------------------------------------------------------------
 # Worker-side: install the hooks
 # --------------------------------------------------------------------------
-def _install_trace(self) -> dict:
+def _install_trace(self: "Worker") -> dict:
     """Patch the manager and the timing collector. Runs inside the worker."""
     runner = self.model_runner
     av = getattr(runner, "adaptive_verification", None)
@@ -93,7 +103,7 @@ def _install_trace(self) -> dict:
         __import__("vllm").envs.VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN)}
 
 
-def _drain_trace(self) -> dict:
+def _drain_trace(self: "Worker") -> dict:
     """Resolve the recorded CUDA events and hand back the rows."""
     runner = self.model_runner
     collector = runner.step_timing
