@@ -503,11 +503,42 @@ high-throughput serving regime.
 direction is over-allocation, and the magnitude depends on batch size in a way
 the original framing did not capture.
 
-**What this does NOT show.** It is a **simulation, not a measurement**:
-survival probabilities are drawn from a distribution matched to E3's observed
-acceptance rates, and the marginal cost per verified token is assumed. It
-bounds the plausible size of the effect and motivates the real oracle bound —
-replaying actual logged decisions against measured true step times — which
-remains the outstanding piece of work.
+**Sensitivity — and a large correction to the numbers above.** The table
+above used an *assumed* marginal cost of 0.02 ms per verified token. A
+sensitivity sweep shows the result is almost entirely determined by that one
+invented parameter:
+
+    varying k        (4x range):   7.87%  ->  12.49%     mild
+    varying marginal (20x range):  0.30%  ->  60.97%     dominates
+
+The marginal cost is measurable from data already collected: the slope of cost
+against token count at zero context is **0.00716 ms/token** in the graphed
+sweep and 0.00931 in the eager one. Re-running with 0.007:
+
+     reqs    ctx  true B  vLLM B  rate lost
+       16    256      48      48      0.01%
+       32    256      94      96      0.12%
+       64    256     167     192      0.95%
+
+**Under 1% everywhere, against the 11.29% reported above.** The headline figure
+was an artifact of an invented parameter and must not be quoted. The measured
+value says the mispricing barely moves the decision.
+
+**What this means.** Three readings remain open, and the simulation cannot
+separate them:
+
+1. The effect really is small, and the honest outcome is a measurement study
+   characterising when cost models matter rather than a scheduler improvement.
+2. The simulation's structure is wrong — marginal cost may not be linear in B,
+   and the slope measured here conflates *adding a request* with *adding a
+   draft token to an existing request*, which is the quantity the budget
+   decision actually turns on and is probably cheaper still.
+3. Real workloads differ from the assumed survival distribution or carry
+   heterogeneous contexts within a batch, neither of which is modelled.
+
+**This makes the real oracle bound more important, not less.** Replaying logged
+decisions against measured step times removes the survival assumption *and* the
+marginal-cost assumption at once, and it is the only thing that can decide
+between the three readings above. `bench/step_trace.py` logs what it needs.
 
 ---
