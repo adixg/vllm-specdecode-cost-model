@@ -542,3 +542,50 @@ marginal-cost assumption at once, and it is the only thing that can decide
 between the three readings above. `bench/step_trace.py` logs what it needs.
 
 ---
+
+## E8 — the sign-flip prediction, confirmed out-of-sample
+
+`pace/run_all.sbatch` (experiment B) → `results/h100_ctx_straddle.json`
+
+**The prediction.** vLLM profiles its cost table assuming 8192 tokens of
+context per request. Every context measured up to this point was at or below
+8192, so every observed error was over-prediction. The model says the sign must
+**flip** above 8192 — and under-prediction is the damaging direction, since it
+makes the scheduler commit to work it cannot afford.
+
+**Confirmed exactly.** Contexts 1024 to 32,000, on an H100 with FA3:
+
+     n    ctx   pred_ms  actual_ms   rel_err
+     1   1024     2.272      2.002    -11.9%
+     1  32000     2.272      3.158    +39.0%
+    16   1024     6.806      2.644    -61.2%
+    16   8192     6.806      6.806     +0.0%   <-- the profiling point
+    16  16384     6.806     11.577    +70.1%
+    16  32000     6.806     20.628   **+203.1%**
+
+The sign changes at exactly 8192 and the magnitude scales with
+`num_reqs * |ctx - 8192|`, as the model requires. Under-prediction reaches
+**+203%**: vLLM believes a 20.6 ms step will take 6.8 ms.
+
+**The model predicts the magnitudes, not just the direction.** Applying the
+correction with `k = 0.0356 us/KV-token` — **fitted on entirely different data**
+(`h100_e1`/`h100_e5`, a different `max_num_seqs`, contexts capped at 4096) and
+used here unchanged:
+
+    corrected = table[n] + k * num_reqs * (ctx - 8192)
+
+                    median |error|    max |error|
+    two-term model       0.8%            3.0%
+    stock vLLM          33.9%          203.1%
+
+**A 42x reduction in median error on out-of-sample data**, over a context range
+four times beyond where the constant was fitted. This is the project's
+strongest evidence: a prediction made in advance, tested on new measurements,
+confirmed in both sign and magnitude.
+
+**What this does NOT show.** Still synthetic `_dummy_run` batches with a single
+context per batch, one model, one GPU, and all cells inside the CUDA-graph
+capture range. It measures prediction accuracy, not serving benefit; whether
+better predictions produce better scheduling remains the open question.
+
+---
