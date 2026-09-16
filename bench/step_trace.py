@@ -46,7 +46,9 @@ if TYPE_CHECKING:
 # Worker-side: install the hooks
 # --------------------------------------------------------------------------
 def _install_trace(self: "Worker") -> dict:
-    """Patch the manager and the timing collector. Runs inside the worker."""
+    """Patch the manager and add step timing. Runs inside the worker."""
+    import torch
+
     runner = self.model_runner
     av = getattr(runner, "adaptive_verification", None)
     if av is None:
@@ -94,34 +96,61 @@ def _install_trace(self: "Worker") -> dict:
 
     av.get_num_tokens = traced_get_num_tokens
 
-    # StepTimingCollector normally records only inside its collect() block.
-    # Forcing the flag on makes it accumulate a sample for every real step;
-    # drafter_end() is what appends, and DSpark always reaches it.
-    runner.step_timing._collecting = True
+    # Timing real steps has to be done by hand. vLLM's StepTimingCollector
+    # looks like the obvious tool, but it is only fully wired inside
+    # _dummy_run: in model_runner.py, forward_end() and drafter_end() - the
+    # call that actually appends a sample - live at lines 717 and 764, both
+    # inside _dummy_run, while the real execute_model path only reaches
+    # record_batch() and forward_start(). Setting its _collecting flag during
+    # serving therefore yields nothing, which is how the first attempt at this
+    # captured 35 decisions and 0 timings.
+    #
+    # So wrap execute_model with our own CUDA events. These measure GPU time
+    # between the two record points, which includes sampling as well as the
+    # forward pass - slightly broader than vLLM's forward_ms, but consistent
+    # across every step and therefore comparable within this experiment.
+    self._trace_events = []
+    original_execute = runner.execute_model
 
-    return {"ok": True, "profile_context_len": int(
-        __import__("vllm").envs.VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN)}
+    def traced_execute_model(scheduler_output, *args, **kwargs):
+        dummy = kwargs.get("dummy_run", False)
+        if dummy or scheduler_output.total_num_scheduled_tokens == 0:
+            return original_execute(scheduler_output, *args, **kwargs)
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        out = original_execute(scheduler_output, *args, **kwargs)
+        end.record()
+        self._trace_events.append(
+            (start, end, int(scheduler_output.total_num_scheduled_tokens))
+        )
+        return out
+
+    runner.execute_model = traced_execute_model
+
+    return {
+        "ok": True,
+        "profile_context_len": int(
+            __import__("vllm").envs.VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN),
+        "captured_token_counts": list(runner.cudagraph_manager.captured_token_counts()),
+    }
 
 
 def _drain_trace(self: "Worker") -> dict:
     """Resolve the recorded CUDA events and hand back the rows."""
-    runner = self.model_runner
-    collector = runner.step_timing
+    import torch
 
-    timed, collector._timed = collector._timed, []
-    collector._collecting = False
-
+    events = getattr(self, "_trace_events", [])
     timings = []
-    if timed:
-        timed[-1][0].drafter_end.synchronize()
-        for events, (full_cudagraph, num_target_tokens, num_reqs) in timed:
+    if events:
+        # Events are recorded on one stream in issue order, so once the last
+        # one completes every earlier one has too: a single sync suffices.
+        torch.cuda.synchronize()
+        for start, end, num_target_tokens in events:
             timings.append(
                 {
-                    "forward_ms": events.forward_start.elapsed_time(events.forward_end),
-                    "drafter_ms": events.drafter_start.elapsed_time(events.drafter_end),
+                    "step_ms": start.elapsed_time(end),
                     "num_target_tokens": int(num_target_tokens),
-                    "num_reqs": int(num_reqs),
-                    "full_cudagraph": bool(full_cudagraph),
                 }
             )
 
@@ -234,7 +263,7 @@ def main() -> int:
         return 1
 
     pred = [r["predicted_ms"] for r in rows]
-    act = [r["forward_ms"] for r in rows]
+    act = [r["step_ms"] for r in rows]
     stats = agreement(pred, act)
 
     print(f"\n=== predicted vs actual over {stats['n']} real steps ===")
@@ -243,13 +272,16 @@ def main() -> int:
     print(f"  RMSE  {stats['rmse_ms']:.3f} ms")
     print(f"  r     {stats['r']:.3f}")
 
-    graphed = [r for r in rows if r["full_cudagraph"]]
-    eager = [r for r in rows if not r["full_cudagraph"]]
-    for name, sub in (("cudagraph", graphed), ("eager", eager)):
+    # Split by whether the step was inside the cudagraph capture range, which
+    # E6 showed is what decides whether KV reads are exposed or hidden.
+    limit = max(runner_capture, default=0) if (runner_capture := setup.get(
+        "captured_token_counts", [])) else 0
+    for name, sub in (("cudagraph", [r for r in rows if limit and r["num_tokens"] <= limit]),
+                      ("eager", [r for r in rows if not limit or r["num_tokens"] > limit])):
         if len(sub) > 1:
-            s = agreement([r["predicted_ms"] for r in sub], [r["forward_ms"] for r in sub])
-            print(f"  [{name:>9}] n={s['n']:>5}  bias={s['bias_ms']:+7.3f}  "
-                  f"RMSE={s['rmse_ms']:6.3f}  r={s['r']:.3f}")
+            st_ = agreement([r["predicted_ms"] for r in sub], [r["step_ms"] for r in sub])
+            print(f"  [{name:>9}] n={st_['n']:>5}  bias={st_['bias_ms']:+7.3f}  "
+                  f"RMSE={st_['rmse_ms']:6.3f}  r={st_['r']:.3f}")
 
     ctxs = [r["total_context"] for r in rows]
     print(f"\ncontext seen across steps: {min(ctxs):,} .. {max(ctxs):,} tokens "
