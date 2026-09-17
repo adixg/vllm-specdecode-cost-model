@@ -589,3 +589,64 @@ capture range. It measures prediction accuracy, not serving benefit; whether
 better predictions produce better scheduling remains the open question.
 
 ---
+
+## E9 — does fixing the cost model make serving faster?
+
+`bench/serving_ab.py` → `results/h100_serving_ab.json`
+`bench/step_trace.py` → `results/h100_step_trace.json`
+
+**Question.** Every result so far concerns prediction *accuracy*. Cost accuracy
+has exactly **one** consumer in vLLM — the table is read only at
+`adaptive_verification.py:305` and the resulting budget used only at
+`model_runner.py:1084` — so a better estimate is worth nothing unless it
+changes the chosen budget and that change is worth something. That step had
+been assumed throughout and never measured.
+
+**Method.** Both modes alternate round by round inside one engine, with prefix
+caching off. Since E8 showed the corrected model predicts within 0.8% of
+measured cost, it stands in for perfect knowledge: the gap approximates the
+**oracle bound**.
+
+**Result: +0.68%, real but small.**
+
+    round      1      2      3      4      5      6
+    delta  +0.03% +1.07% +1.12% +0.10% +1.16% +0.58%
+
+    mean +0.68%   median +0.83%   faster in 6/6 rounds
+    standard error 0.21%, mean is 3.2 SE from zero
+
+The comparison must be **paired**: the modes alternate inside each round and
+share that round's drift. The unpaired spread is 1.39%, which would have
+declared this "within noise" and hidden a real effect. The harness originally
+made that mistake and has been corrected.
+
+This also validates E7: that simulation predicted ~0.95% for this
+configuration, against 0.68% measured.
+
+**Why it is small — the mechanism.** The step trace on real generation shows
+the draft budget **pinned at its maximum on every step**: 192 of a possible
+192, across all 30 steps, with vLLM predicting 8.879 ms for steps that
+actually took ~4.30 ms (real contexts averaged ~750 tokens per request against
+the assumed 8192).
+
+**Adaptive verification is not adapting.** When vLLM believes a step costs
+8.9 ms, the marginal cost of one more draft token (~0.007 ms) is negligible
+against it, so "verify everything" always wins the argmax. A better cost
+estimate can only help when it pulls the optimum *off* that ceiling, which it
+does occasionally — hence 0.7% rather than 0%.
+
+So the honest summary of the project to date: **vLLM's verification cost model
+is wrong by up to 203%, one scalar makes it 42x more accurate, and that buys
+0.7% of throughput because the mechanism it feeds is saturated.**
+
+**What this does NOT show.**
+- One workload, one model, one GPU, `num_speculative_tokens=3`,
+  `max_num_seqs=64`. Whether saturation is universal is untested and is the
+  next question — `pace/run_saturation.sbatch` varies draft-block length and
+  concurrency to find out.
+- The step trace captured only 30 steps, all with identical batch shape,
+  because all 64 prompts ran in lockstep. Staggered arrivals would give the
+  variety the trace was built to capture; `r` is NaN here because the
+  prediction never varied.
+
+---

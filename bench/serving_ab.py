@@ -188,16 +188,29 @@ def main() -> int:
     print(f"\n{'':>10} {'median tok/s':>13} {'round spread':>13}")
     print(f"{'stock':>10} {s_med:>13.1f} {spread(res['stock']):>12.1%}")
     print(f"{'corrected':>10} {c_med:>13.1f} {spread(res['corrected']):>12.1%}")
-    delta = (c_med - s_med) / s_med
-    print(f"\ncorrected is {delta:+.2%} vs stock")
 
+    # PAIRED comparison. The two modes alternate inside each round, so they
+    # share that round's drift; subtracting within a round removes it. An
+    # unpaired test against the raw spread is far too conservative and will
+    # hide a real effect smaller than the drift.
+    pairs = [(c - s) / s for s, c in zip(res["stock"], res["corrected"])]
+    mean = statistics.mean(pairs)
+    print(f"\npaired per-round delta: "
+          f"{', '.join(f'{p:+.2%}' for p in pairs)}")
+    print(f"mean {mean:+.2%}   median {statistics.median(pairs):+.2%}   "
+          f"corrected faster in {sum(p > 0 for p in pairs)}/{len(pairs)} rounds")
+    delta = mean
+
+    if len(pairs) > 2:
+        se = statistics.stdev(pairs) / len(pairs) ** 0.5
+        n_se = mean / se if se else float("inf")
+        print(f"standard error {se:.2%}; mean is {n_se:.1f} SE from zero")
+        if abs(n_se) < 2:
+            print("NOT DISTINGUISHABLE FROM ZERO: this bounds the benefit rather\n"
+                  "than measuring it.")
+        else:
+            print("Effect is distinguishable from zero.")
     noise = max(spread(res["stock"]), spread(res["corrected"]))
-    if abs(delta) < noise:
-        print(f"WITHIN NOISE: round-to-round spread is {noise:.1%}, larger than the\n"
-              f"effect. This bounds the benefit rather than measuring it - no\n"
-              f"improvement larger than about {noise:.1%} is available here.")
-    else:
-        print(f"Effect ({abs(delta):.1%}) exceeds round-to-round spread ({noise:.1%}).")
 
     if offsets:
         print(f"\ncorrection applied to {len(offsets)} decisions in the last round, "
