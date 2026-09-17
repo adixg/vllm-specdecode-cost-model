@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=01:00:00
+#SBATCH --time=01:15:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
@@ -59,6 +59,23 @@ for SPEC in 3 7; do
         || { echo "FAILED spec=$SPEC seqs=$SEQS"; STATUS=1; }
   done
 done
+
+# Every DSpark checkpoint declares block_size: 7, so 7 is the intended draft
+# block length; the earlier A/B used 3, which was arbitrary. If the budget
+# comes off its ceiling at 7, the throughput result changes too.
+echo
+echo "=== A/B at the intended block size, spec=7 ($(date +%T)) ==="
+python bench/serving_ab.py \
+    --model openbmb/MiniCPM5-2B \
+    --draft openbmb/MiniCPM5-2B-DSpark \
+    --num-speculative-tokens 7 \
+    --max-num-seqs 64 \
+    --num-prompts 64 \
+    --max-tokens 128 \
+    --prompt-tokens 64 512 2048 \
+    --rounds 6 \
+    --out results/h100_serving_ab_spec7.json \
+    || { echo "AB spec7 FAILED"; STATUS=1; }
 
 echo
 echo "=== done ($(date +%T)) exit=$STATUS ==="
