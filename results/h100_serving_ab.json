@@ -1,0 +1,42 @@
+{
+  "generated_utc": "2026-09-17T05:30:59.813551+00:00",
+  "args": {
+    "model": "openbmb/MiniCPM5-2B",
+    "draft": "openbmb/MiniCPM5-2B-DSpark",
+    "num_speculative_tokens": 3,
+    "max_model_len": 4096,
+    "max_num_seqs": 64,
+    "gpu_memory_utilization": 0.85,
+    "attention_backend": null,
+    "k": 3.56e-05,
+    "rounds": 6,
+    "warmup_rounds": 1,
+    "num_prompts": 64,
+    "max_tokens": 128,
+    "prompt_tokens": [
+      64,
+      512,
+      2048
+    ],
+    "out": "results/h100_serving_ab.json"
+  },
+  "profile_context_len": 8192,
+  "stock_tok_s": [
+    14261.35038526612,
+    14146.363556941116,
+    14071.302882866405,
+    14268.527985987688,
+    14167.407960139739,
+    14181.457252962698
+  ],
+  "corrected_tok_s": [
+    14265.757347145762,
+    14298.105812806298,
+    14228.480706133072,
+    14283.013598372276,
+    14331.90800388841,
+    14263.805774470267
+  ],
+  "delta": 0.007051630847050922,
+  "noise": 0.013914144473770965
+}
