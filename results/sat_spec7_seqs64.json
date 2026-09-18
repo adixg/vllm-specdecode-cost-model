@@ -1,0 +1,104 @@
+{
+  "generated_utc": "2026-09-17T21:52:36.626700+00:00",
+  "args": {
+    "model": "openbmb/MiniCPM5-2B",
+    "draft": "openbmb/MiniCPM5-2B-DSpark",
+    "num_speculative_tokens": 7,
+    "max_model_len": 4096,
+    "max_num_seqs": 64,
+    "gpu_memory_utilization": 0.85,
+    "attention_backend": null,
+    "num_prompts": 48,
+    "max_tokens": 96,
+    "prompt_tokens": [
+      64,
+      512,
+      1024,
+      2048,
+      3000
+    ],
+    "out": "results/sat_spec7_seqs64.json"
+  },
+  "profile_context_len": 8192,
+  "agreement": {
+    "n": 6,
+    "bias_ms": -4.610154787699382,
+    "mae_ms": 4.610154787699382,
+    "rmse_ms": 4.617073816203322,
+    "r": NaN
+  },
+  "rows": [
+    {
+      "num_reqs": 48,
+      "num_tokens": 384,
+      "non_draft_tokens": 48,
+      "draft_budget": 336,
+      "total_context": 53125,
+      "sum_seq_lens": 53509,
+      "max_context": 2551,
+      "predicted_ms": 9.674976110458374,
+      "step_ms": 5.625088214874268,
+      "num_target_tokens": 384
+    },
+    {
+      "num_reqs": 48,
+      "num_tokens": 384,
+      "non_draft_tokens": 48,
+      "draft_budget": 336,
+      "total_context": 53507,
+      "sum_seq_lens": 53891,
+      "max_context": 2559,
+      "predicted_ms": 9.674976110458374,
+      "step_ms": 4.895328044891357,
+      "num_target_tokens": 384
+    },
+    {
+      "num_reqs": 48,
+      "num_tokens": 384,
+      "non_draft_tokens": 48,
+      "draft_budget": 336,
+      "total_context": 53891,
+      "sum_seq_lens": 54275,
+      "max_context": 2567,
+      "predicted_ms": 9.674976110458374,
+      "step_ms": 4.935808181762695,
+      "num_target_tokens": 384
+    },
+    {
+      "num_reqs": 48,
+      "num_tokens": 384,
+      "non_draft_tokens": 48,
+      "draft_budget": 336,
+      "total_context": 54275,
+      "sum_seq_lens": 54659,
+      "max_context": 2575,
+      "predicted_ms": 9.674976110458374,
+      "step_ms": 4.952767848968506,
+      "num_target_tokens": 384
+    },
+    {
+      "num_reqs": 48,
+      "num_tokens": 384,
+      "non_draft_tokens": 48,
+      "draft_budget": 336,
+      "total_context": 54659,
+      "sum_seq_lens": 55043,
+      "max_context": 2583,
+      "predicted_ms": 9.674976110458374,
+      "step_ms": 4.993663787841797,
+      "num_target_tokens": 384
+    },
+    {
+      "num_reqs": 48,
+      "num_tokens": 384,
+      "non_draft_tokens": 48,
+      "draft_budget": 336,
+      "total_context": 55043,
+      "sum_seq_lens": 55427,
+      "max_context": 2591,
+      "predicted_ms": 9.674976110458374,
+      "step_ms": 4.986271858215332,
+      "num_target_tokens": 384
+    }
+  ]
+}
