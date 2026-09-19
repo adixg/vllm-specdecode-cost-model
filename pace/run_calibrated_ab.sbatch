@@ -17,8 +17,17 @@ set -euo pipefail
 SPEC_TOKENS="${SPEC_TOKENS:-7}"
 MODEL_ID="openbmb/MiniCPM5-2B"
 DRAFT_ID="openbmb/MiniCPM5-2B-DSpark"
-PROBE_OUT="results/minicpm_h100_k_probe.json"
+CALIBRATION_OUT="results/minicpm_h100_dspark_k_spec${SPEC_TOKENS}.json"
 AB_OUT="results/h100_calibrated_ab_spec${SPEC_TOKENS}.json"
+
+case "$SPEC_TOKENS" in
+    7) CALIBRATION_TOKENS=(64 128 256 384 512) ;;
+    3) CALIBRATION_TOKENS=(64 128 192 256) ;;
+    *)
+        echo "ERROR: this experiment is defined for SPEC_TOKENS=3 or 7" >&2
+        exit 2
+        ;;
+esac
 
 echo "=== GPU ==="
 nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv
@@ -41,25 +50,10 @@ mkdir -p results logs
 echo "=== versions ==="
 python -c "import torch, vllm; print('vllm', vllm.__version__, '| torch', torch.__version__)"
 
-# Fit MiniCPM's own context coefficient on this GPU. All token shapes use 64
-# requests and remain inside the CUDA-graph capture range. serving_ab.py fits
-# one shared slope while allowing a separate intercept for each token shape.
-echo "=== calibrating MiniCPM k ($(date +%T)) ==="
-python bench/verify_cost_probe.py \
-    --model "$MODEL_ID" \
-    --max-model-len 4096 \
-    --max-num-seqs 64 \
-    --gpu-memory-utilization 0.85 \
-    --num-tokens 128 256 384 512 \
-    --context-lens 0 1024 4096 \
-    --replays 25 \
-    --warmup 5 \
-    --out "$PROBE_OUT"
-
-# The intended DSpark block size is seven. Modes are paired and run AB/BA on
-# alternating rounds. The output includes every chosen budget, ceiling status,
-# correction offset, and whether the selected verification cost was clamped.
-echo "=== calibrated A/B, spec=$SPEC_TOKENS ($(date +%T)) ==="
+# One process creates one DSpark engine. It first calibrates k using that live
+# engine's captured graphs, then freezes k and runs the A/B without reloading or
+# changing execution regimes. The intended/default DSpark block size is seven.
+echo "=== in-engine calibration + A/B, spec=$SPEC_TOKENS ($(date +%T)) ==="
 python bench/serving_ab.py \
     --model "$MODEL_ID" \
     --draft "$DRAFT_ID" \
@@ -67,7 +61,12 @@ python bench/serving_ab.py \
     --max-model-len 4096 \
     --max-num-seqs 64 \
     --gpu-memory-utilization 0.85 \
-    --k-probe "$PROBE_OUT" \
+    --calibrate-k \
+    --calibration-token-counts "${CALIBRATION_TOKENS[@]}" \
+    --calibration-context-lens 0 1024 2048 3072 4096 \
+    --calibration-replays 25 \
+    --calibration-warmup 5 \
+    --calibration-out "$CALIBRATION_OUT" \
     --num-prompts 64 \
     --max-tokens 128 \
     --prompt-tokens 64 512 1024 2048 3000 \
@@ -76,4 +75,4 @@ python bench/serving_ab.py \
     --out "$AB_OUT"
 
 echo "=== done ($(date +%T)) ==="
-ls -lh "$PROBE_OUT" "$AB_OUT"
+ls -lh "$CALIBRATION_OUT" "$AB_OUT"
