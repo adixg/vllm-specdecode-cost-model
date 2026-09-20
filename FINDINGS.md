@@ -25,9 +25,11 @@ head_dim 128 → 112 KB KV per token), RTX 4060 Laptop (sm_89, ~7950 MB usable,
 | **E3** | Does stock DSpark run, and does the manager engage? | nothing; feasibility check | yes, 47.9% acceptance |
 | **E5** | E1 again, but inside the CUDA-graph regime | `num_reqs` 1-64 (= `num_tokens`) x context | **9.6x** spread (laptop) |
 | **E6** | E1 and E5 on production hardware (H100, FA3) | same sweeps, real GPU, no KV aliasing | **7.8x** graphed, **~1%** eager |
-
-E4 was planned - fit and validate the two-term model on controlled
-heterogeneous batches - and has not been run.
+| **E4** | Which correction form predicts held-out contexts? | additive vs max-like, graphed and eager | additive wins for graphs; **11.6x** lower test RMSE |
+| **E7** | Does the error change the chosen draft budget? | simulated context offset with measured marginal cost | yes, but predicted loss is **<1%** |
+| **E8** | Does error change sign beyond the profile context? | contexts 1,024-32,000 on H100 | yes; scalar correction cuts median error **42x** |
+| **E9** | First serving A/B and saturation sweep | spec 3/7, concurrency 16/64 | saturation is real; A/B result is **superseded** |
+| **E10** | Calibrated in-engine MiniCPM spec-7 A/B | 20 paired rounds, exact profile reconstruction | correction changes decisions but throughput is **0.365% lower** |
 
 Sections below are in experiment order. Numbering is historical, not
 chronological: E5 was run before E3.
@@ -590,63 +592,150 @@ better predictions produce better scheduling remains the open question.
 
 ---
 
-## E9 — does fixing the cost model make serving faster?
+## E9 — first serving A/B and saturation sweep (A/B superseded)
 
-`bench/serving_ab.py` → `results/h100_serving_ab.json`
-`bench/step_trace.py` → `results/h100_step_trace.json`
+`bench/serving_ab.py` → `results/h100_serving_ab.json`,
+`results/h100_serving_ab_spec7.json`
 
-**Question.** Every result so far concerns prediction *accuracy*. Cost accuracy
-has exactly **one** consumer in vLLM — the table is read only at
-`adaptive_verification.py:305` and the resulting budget used only at
-`model_runner.py:1084` — so a better estimate is worth nothing unless it
-changes the chosen budget and that change is worth something. That step had
-been assumed throughout and never measured.
+`bench/step_trace.py` → `results/h100_step_trace.json`,
+`results/sat_spec{3,7}_seqs{16,64}.json`
 
-**Method.** Both modes alternate round by round inside one engine, with prefix
-caching off. Since E8 showed the corrected model predicts within 0.8% of
-measured cost, it stands in for perfect knowledge: the gap approximates the
-**oracle bound**.
+**Question.** Every result through E8 concerns prediction accuracy. Does the
+error change the adaptive manager's chosen budget, and does that change improve
+end-to-end throughput?
 
-**Result: +0.68%, real but small.**
+**The valid result from this stage is saturation.** Across all four stock
+traces — speculative block 3 or 7, concurrency 16 or 64 — every recorded
+decode step selected the full available draft budget:
 
-    round      1      2      3      4      5      6
-    delta  +0.03% +1.07% +1.12% +0.10% +1.16% +0.58%
+    configuration       steps at ceiling
+    spec 3, 16 seqs          66 / 66
+    spec 3, 64 seqs          19 / 19
+    spec 7, 16 seqs          29 / 29
+    spec 7, 64 seqs           6 / 6
 
-    mean +0.68%   median +0.83%   faster in 6/6 rounds
-    standard error 0.21%, mean is 3.2 SE from zero
+The one-dimensional stock table overestimates these short-context verification
+steps, inflating the fixed part of the denominator and making every marginal
+draft token look cheap. The manager therefore remains at the ceiling over a
+meaningful range of block sizes and concurrency levels.
 
-The comparison must be **paired**: the modes alternate inside each round and
-share that round's drift. The unpaired spread is 1.39%, which would have
-declared this "within noise" and hidden a real effect. The harness originally
-made that mistake and has been corrected.
+**The throughput numbers from this stage are invalid and must not be quoted as
+oracle results.** They reported `+0.68%` for spec 3 and `-0.25%` for spec 7,
+but both used `k = 0.0356 us/KV-token`, measured for Qwen3-1.7B, while serving
+MiniCPM5-2B. They also treated the nominal 8,192-token profile context as the
+real baseline. With `max_model_len=4096`, vLLM actually caps the installed
+dummy context to roughly 4,096 minus the query length. Those two errors made
+the correction too large, allowed corrected table entries to hit the positive
+clamp, and invalidated the comparison. E10 replaces it with an in-engine,
+model-specific calibration and an exact reconstruction of every profile point.
 
-This also validates E7: that simulation predicted ~0.95% for this
-configuration, against 0.68% measured.
+**Methodological result retained from E9.** A serving comparison must be
+paired. Alternating stock/corrected order within a round removes shared clock
+and thermal drift; comparing unpaired overall spreads can hide a sub-percent
+effect.
 
-**Why it is small — the mechanism.** The step trace on real generation shows
-the draft budget **pinned at its maximum on every step**: 192 of a possible
-192, across all 30 steps, with vLLM predicting 8.879 ms for steps that
-actually took ~4.30 ms (real contexts averaged ~750 tokens per request against
-the assumed 8192).
+---
 
-**Adaptive verification is not adapting.** When vLLM believes a step costs
-8.9 ms, the marginal cost of one more draft token (~0.007 ms) is negligible
-against it, so "verify everything" always wins the argmax. A better cost
-estimate can only help when it pulls the optimum *off* that ceiling, which it
-does occasionally — hence 0.7% rather than 0%.
+## E10 — calibrated MiniCPM/H100 spec-7 serving A/B
 
-So the honest summary of the project to date: **vLLM's verification cost model
-is wrong by up to 203%, one scalar makes it 42x more accurate, and that buys
-0.7% of throughput because the mechanism it feeds is saturated.**
+`bench/serving_ab.py` → `results/h100_calibrated_ab_spec7.json`
 
-**What this does NOT show.**
-- One workload, one model, one GPU, `num_speculative_tokens=3`,
-  `max_num_seqs=64`. Whether saturation is universal is untested and is the
-  next question — `pace/run_saturation.sbatch` varies draft-block length and
-  concurrency to find out.
-- The step trace captured only 30 steps, all with identical batch shape,
-  because all 64 prompts ran in lockstep. Staggered arrivals would give the
-  variety the trace was built to capture; `r` is NaN here because the
-  prediction never varied.
+In-engine calibration → `results/minicpm_h100_dspark_k_spec7.json`
+
+**Method.** One live MiniCPM5-2B + DSpark engine first measured context slopes
+after all CUDA graphs were captured, then froze that fitted `k` and ran the
+stock/corrected A/B without changing engine or execution regime. The correction
+reconstructed the aggregate sequence length behind each vLLM profile point,
+including max-model-length capping, query tokens, graph padding, and eager-tail
+interpolation. Guards required full CUDA graphs and exact calibration shapes,
+equal output counts, no selected-cost clamp, a full-concurrency workload, and
+20 counterbalanced AB/BA pairs after two warmup pairs.
+
+Here **stock** means the unmodified vLLM/DSpark cost table and budget policy;
+it does not mean speculation is disabled. **Corrected** changes only the target
+verification-cost table seen by that same policy:
+
+    corrected_cost[t] = stock_cost[t]
+                      + k * (real_sum_seq_lens - profiled_sum_seq_lens[t])
+
+**Calibration result.** MiniCPM's fitted value is
+`k = 0.013702 us/KV-token`, not Qwen's `0.0356`:
+
+    target tokens       64       128       256       384       512
+    k (us/KV-token)  0.01353   0.01356   0.01368   0.01383   0.01391
+
+The per-shape spread is **2.78%** and fixed-effect RMSE is **0.038 ms** across
+contexts 0, 1,024, 2,048, 3,072, and the effective 4,088-4,095 limit. All
+samples were full CUDA graphs. This validates a model-specific scalar context
+term across the complete spec-7 verification range of 64-512 target tokens.
+
+**Throughput result: the accurate correction is slightly slower.** Every mode
+generated exactly 8,192 tokens in every round.
+
+    mode          median tok/s
+    stock              10,971.9
+    corrected          10,923.5
+
+    paired mean delta       -0.3649%
+    paired median delta     -0.38%
+    standard error           0.1091%
+    approximate 95% CI      [-0.59%, -0.14%]
+    corrected faster         6 / 20 rounds
+
+Both AB-order and BA-order subsets were negative (`-0.426%` and `-0.304%`),
+so the result is not an order artifact. No selected corrected cost was clamped.
+
+**Mechanism: cheaper verification caused less drafting and more target
+invocations.** Prefill/mixed steps were identical: 140 decisions per mode and
+100% at the feasible ceiling. Decode is where the policies diverged:
+
+    decode metric                 stock       corrected
+    decisions                       347             360
+    at feasible ceiling          97.98%          89.17%
+    off-ceiling decisions             7              39
+    draft shortfall                 8 x7     8 x20, 16 x19
+
+The serving batch carried a median aggregate decode context of about 73,000
+tokens, while the stock table point represented 262,144. The correction's
+median selected offset was `-2.585 ms`, reducing the typical verification
+estimate from `8.622 ms` to `6.030 ms`. Once target verification looked cheap,
+the optimizer sometimes decided that 8 or 16 additional draft candidates were
+not worth generating. Fewer candidates were accepted before completion, so the
+corrected runs needed **13 additional decode decisions across 20 rounds** for
+the same output. Their cost outweighed the saved drafting work.
+
+**Interpretation.** The cost-model diagnosis is correct, the scalar correction
+is accurate, and the corrected estimate changes real scheduling decisions. In
+this workload those changes hurt throughput slightly. Stock's context error
+accidentally keeps the manager near the maximum draft budget, which is better
+for this batch. The remaining mismatch is therefore in the downstream
+objective — it does not fully price the extra iterations and other end-to-end
+overheads induced by trimming drafts — rather than in the context-cost fit.
+
+**Workload limitation discovered after the run.** The CLI listed prompt lengths
+64, 512, 1,024, 2,048, and 3,000, but the harness constructed a text string,
+truncated its token IDs only if it was long enough, decoded it, and let vLLM
+tokenize the string again. The requested lengths were upper bounds, not
+verified lengths. At full-batch decode the recorded aggregate context was
+71,190-75,924 tokens, or roughly 1,112-1,186 per active request. If all
+configured input lengths had been exact, the prompts alone would total 83,424
+tokens (1,303.5/request) before generation. The A/B remains valid for the
+workload actually executed, but it is not an exact input-length sweep.
+
+**Scoped conclusion.** E10 is conclusive for this simultaneous-arrival,
+64-request, approximately 1.1K-average active-context, 128-output-token,
+MiniCPM/H100/spec-7 workload. It does not show that corrected scheduling is
+universally slower. As context approaches the effective 4K profile point, the
+negative offset shrinks toward zero; longer generation also changes how much
+time is spent at full concurrency versus draining the tail.
+
+**Remaining experiment.** `pace/run_serving_context_sweep.sbatch` now runs the
+same calibrated spec-7 A/B on homogeneous **exact token-ID** inputs of 64, 512,
+1,024, 2,048, and 3,000 tokens, with 64 requests and exactly 128 generated
+tokens each. It calibrates once, warms every workload before measurement,
+counterbalances both context and mode order, verifies input/output lengths on
+every round, and rejects any selected-cost clamp. This is the one experiment
+needed before generalizing the throughput result across context length. It has
+not yet been run.
 
 ---

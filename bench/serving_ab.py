@@ -23,6 +23,11 @@ min(configured_profile_context, max_model_len - max_query_len). Thus a nominal
 Modes are paired inside one engine and their order reverses every round (ABBA),
 so neither mode is always charged the within-round order effect.
 
+With --exact-prompt-sweep, every configured prompt length becomes a separate
+homogeneous workload. Prompts are submitted as token IDs (never decoded and
+re-tokenized), every workload is warmed before any measurements, and context
+order reverses between rounds to distribute machine drift across lengths.
+
     export VLLM_USE_V2_MODEL_RUNNER=1
     python bench/serving_ab.py --model openbmb/MiniCPM5-2B \
                                --draft openbmb/MiniCPM5-2B-DSpark \
@@ -378,6 +383,302 @@ def _drain_ab_trace(self: "Worker") -> dict:
     }
 
 
+def _build_exact_token_prompts(tokenizer, num_prompts: int,
+                               prompt_tokens: int) -> list[dict]:
+    """Build varied, natural-ish prompts with exactly prompt_tokens IDs."""
+    if prompt_tokens <= 0:
+        raise ValueError("prompt length must be positive")
+
+    filler_ids = tokenizer(
+        " systems research inference serving scheduling latency throughput "
+        "batching attention memory bandwidth verification",
+        add_special_tokens=False,
+    ).input_ids
+    if not filler_ids:
+        raise ValueError("tokenizer produced no filler token IDs")
+
+    prompts = []
+    for i in range(num_prompts):
+        prefix_ids = tokenizer(
+            f"Request {i}. Explain this systems result in detail:",
+            add_special_tokens=True,
+        ).input_ids
+        if len(prefix_ids) > prompt_tokens:
+            raise ValueError(
+                f"prompt length {prompt_tokens} is shorter than the "
+                f"{len(prefix_ids)}-token prefix for request {i}"
+            )
+
+        # Rotate the filler so requests are not token-identical, then repeat it
+        # directly in token space. This guarantees the requested length without
+        # a lossy decode/re-tokenize round trip.
+        shift = i % len(filler_ids)
+        rotated = filler_ids[shift:] + filler_ids[:shift]
+        remaining = prompt_tokens - len(prefix_ids)
+        repeats = (remaining + len(rotated) - 1) // len(rotated)
+        token_ids = prefix_ids + (rotated * repeats)[:remaining]
+        if len(token_ids) != prompt_tokens:
+            raise AssertionError("exact prompt construction failed")
+        prompts.append({"prompt_token_ids": token_ids})
+
+    return prompts
+
+
+def _decision_summary(decisions: list[dict]) -> dict:
+    if not decisions:
+        return {
+            "count": 0,
+            "ceiling_fraction": None,
+            "median_draft_budget": None,
+            "chosen_cost_clamped_fraction": None,
+        }
+    return {
+        "count": len(decisions),
+        "ceiling_fraction": (
+            sum(d["at_ceiling"] for d in decisions) / len(decisions)
+        ),
+        "median_draft_budget": statistics.median(
+            d["draft_budget"] for d in decisions
+        ),
+        "chosen_cost_clamped_fraction": (
+            sum(d["chosen_was_clamped"] for d in decisions) / len(decisions)
+        ),
+    }
+
+
+def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
+                            setup: dict) -> int:
+    """Run homogeneous exact-length workloads in one calibrated engine."""
+    prompt_lengths = sorted(set(args.prompt_tokens))
+    tokenizer = llm.get_tokenizer()
+    prompts_by_length = {
+        length: _build_exact_token_prompts(
+            tokenizer, args.num_prompts, length
+        )
+        for length in prompt_lengths
+    }
+    for length, prompts in prompts_by_length.items():
+        observed = {len(p["prompt_token_ids"]) for p in prompts}
+        if observed != {length}:
+            print(
+                f"error: constructed prompt lengths for requested {length}: "
+                f"{sorted(observed)}",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Ignoring EOS makes output work identical across modes and context cells.
+    sampling_params = sampling_params_cls(
+        temperature=0.0,
+        max_tokens=args.max_tokens,
+        ignore_eos=True,
+    )
+    expected_output_tokens = args.num_prompts * args.max_tokens
+
+    def one_round(prompt_length: int, enabled: bool) -> tuple[float, int, dict]:
+        llm.collective_rpc(_set_mode, args=(enabled,))
+        start = time.perf_counter()
+        outputs = llm.generate(
+            prompts_by_length[prompt_length],
+            sampling_params,
+            use_tqdm=False,
+        )
+        duration = time.perf_counter() - start
+        trace = llm.collective_rpc(_drain_ab_trace)[0]
+
+        actual_prompt_lengths = [len(output.prompt_token_ids)
+                                 for output in outputs]
+        if (len(actual_prompt_lengths) != args.num_prompts
+                or any(length != prompt_length
+                       for length in actual_prompt_lengths)):
+            raise RuntimeError(
+                f"engine did not preserve exact {prompt_length}-token inputs: "
+                f"count={len(actual_prompt_lengths)}, "
+                f"lengths={sorted(set(actual_prompt_lengths))}"
+            )
+
+        output_tokens = sum(
+            len(output.outputs[0].token_ids) for output in outputs
+        )
+        if output_tokens != expected_output_tokens:
+            raise RuntimeError(
+                f"expected {expected_output_tokens} output tokens at input "
+                f"length {prompt_length}, got {output_tokens}"
+            )
+        return duration, output_tokens, trace
+
+    print("\nexact prompt-token sweep")
+    print(f"  input lengths: {prompt_lengths}")
+    print(f"  prompts/cell: {args.num_prompts}")
+    print(f"  output tokens/request: {args.max_tokens} (EOS ignored)")
+    print(f"\nwarmup: {args.warmup_rounds} paired round(s) per input length")
+
+    warmup_corrected_traces = {length: [] for length in prompt_lengths}
+    for warmup_round in range(args.warmup_rounds):
+        length_order = (prompt_lengths if warmup_round % 2 == 0
+                        else list(reversed(prompt_lengths)))
+        mode_order = ((False, "stock"), (True, "corrected"))
+        if warmup_round % 2:
+            mode_order = tuple(reversed(mode_order))
+        for length in length_order:
+            for enabled, _ in mode_order:
+                _, _, trace = one_round(length, enabled)
+                if enabled:
+                    warmup_corrected_traces[length].extend(trace["decisions"])
+
+    for length, decisions in warmup_corrected_traces.items():
+        clamped = [d for d in decisions if d["chosen_was_clamped"]]
+        if clamped:
+            print(
+                "error: calibrated correction clamped the selected "
+                f"verification cost at input length {length} in "
+                f"{len(clamped)}/{len(decisions)} warmup decisions; refusing "
+                "to run an invalid A/B",
+                file=sys.stderr,
+            )
+            return 1
+
+    measurements = {
+        length: {
+            "stock_tok_s": [],
+            "corrected_tok_s": [],
+            "output_tokens": {"stock": [], "corrected": []},
+            "round_orders": [],
+            "decision_traces": {"stock": [], "corrected": []},
+        }
+        for length in prompt_lengths
+    }
+
+    print(f"\nmeasuring {args.rounds} paired rounds per input length\n")
+    print(f"{'round':>6} {'input':>7} {'mode':>10} "
+          f"{'seconds':>9} {'out toks':>9} {'tok/s':>9}")
+    print("-" * 58)
+    for round_index in range(args.rounds):
+        length_order = (prompt_lengths if round_index % 2 == 0
+                        else list(reversed(prompt_lengths)))
+        mode_order = ((False, "stock"), (True, "corrected"))
+        if round_index % 2:
+            mode_order = tuple(reversed(mode_order))
+
+        for length in length_order:
+            cell = measurements[length]
+            cell["round_orders"].append([name for _, name in mode_order])
+            for enabled, name in mode_order:
+                duration, output_tokens, trace = one_round(length, enabled)
+                cell[f"{name}_tok_s"].append(output_tokens / duration)
+                cell["output_tokens"][name].append(output_tokens)
+                cell["decision_traces"][name].extend(trace["decisions"])
+                print(f"{round_index + 1:>6} {length:>7} {name:>10} "
+                      f"{duration:>9.3f} {output_tokens:>9} "
+                      f"{output_tokens / duration:>9.1f}")
+
+            if (cell["output_tokens"]["stock"][-1]
+                    != cell["output_tokens"]["corrected"][-1]):
+                print(
+                    f"error: round {round_index + 1}, input {length} generated "
+                    "different output counts between modes",
+                    file=sys.stderr,
+                )
+                return 1
+
+    workload_results = []
+    print("\nper-context paired results")
+    print(f"{'input':>7} {'stock tok/s':>12} {'corr tok/s':>12} "
+          f"{'mean delta':>11} {'SE':>9} {'corr wins':>10}")
+    print("-" * 67)
+    for length in prompt_lengths:
+        cell = measurements[length]
+        stock = cell["stock_tok_s"]
+        corrected = cell["corrected_tok_s"]
+        paired = [(c - s) / s for s, c in zip(stock, corrected)]
+        mean_delta = statistics.mean(paired)
+        median_delta = statistics.median(paired)
+        standard_error = (
+            statistics.stdev(paired) / len(paired) ** 0.5
+            if len(paired) > 2 else None
+        )
+        spread = lambda values: (
+            (max(values) - min(values)) / statistics.median(values)
+        )
+        noise = max(spread(stock), spread(corrected))
+        corrected_wins = sum(delta > 0 for delta in paired)
+        traces = cell["decision_traces"]
+        measured_clamps = [
+            decision
+            for decision in traces["corrected"]
+            if decision["chosen_was_clamped"]
+        ]
+        if measured_clamps:
+            print(
+                "error: calibrated correction clamped the selected "
+                f"verification cost at input length {length} in "
+                f"{len(measured_clamps)}/{len(traces['corrected'])} measured "
+                "decisions; refusing to publish an invalid A/B",
+                file=sys.stderr,
+            )
+            return 1
+
+        decode_traces = {
+            name: [
+                decision for decision in traces[name]
+                if decision["non_draft_tokens"] == decision["num_reqs"]
+            ]
+            for name in ("stock", "corrected")
+        }
+
+        print(f"{length:>7} {statistics.median(stock):>12.1f} "
+              f"{statistics.median(corrected):>12.1f} "
+              f"{mean_delta:>+10.2%} "
+              f"{standard_error if standard_error is not None else float('nan'):>8.2%} "
+              f"{corrected_wins:>4}/{len(paired):<4}")
+
+        workload_results.append({
+            "prompt_tokens": length,
+            "num_prompts": args.num_prompts,
+            "output_tokens_per_prompt": args.max_tokens,
+            "expected_output_tokens_per_round": expected_output_tokens,
+            "stock_tok_s": stock,
+            "corrected_tok_s": corrected,
+            "output_tokens": cell["output_tokens"],
+            "round_orders": cell["round_orders"],
+            "paired_deltas": paired,
+            "mean_delta": mean_delta,
+            "median_delta": median_delta,
+            "standard_error": standard_error,
+            "noise": noise,
+            "corrected_wins": corrected_wins,
+            "decision_summary": {
+                name: _decision_summary(traces[name])
+                for name in ("stock", "corrected")
+            },
+            "decode_decision_summary": {
+                name: _decision_summary(decode_traces[name])
+                for name in ("stock", "corrected")
+            },
+            "decision_traces": traces,
+        })
+
+    result = {
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "experiment": "exact_prompt_context_sweep",
+        "args": vars(args),
+        "profile_context_len": profile_ctx,
+        "prompt_construction": {
+            "kind": "token_ids",
+            "exact_lengths_verified_every_round": True,
+            "homogeneous_batches": True,
+            "ignore_eos": True,
+        },
+        "correction_setup": setup,
+        "workloads": workload_results,
+    }
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    with open(args.out, "w") as output_file:
+        json.dump(result, output_file, indent=2)
+    print(f"\nwrote {args.out}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -407,6 +708,12 @@ def main() -> int:
     p.add_argument("--num-prompts", type=int, default=64)
     p.add_argument("--max-tokens", type=int, default=128)
     p.add_argument("--prompt-tokens", type=int, nargs="+", default=[64, 512, 2048])
+    p.add_argument(
+        "--exact-prompt-sweep",
+        action="store_true",
+        help=("run one homogeneous workload per --prompt-tokens value using "
+              "token-ID inputs with exact lengths"),
+    )
     p.add_argument("--out", default="results/serving_ab.json")
     args = p.parse_args()
 
@@ -417,6 +724,27 @@ def main() -> int:
     if args.num_prompts < args.max_num_seqs:
         print("error: --num-prompts must be at least --max-num-seqs so the "
               "full-concurrency shape is exercised", file=sys.stderr)
+        return 2
+    if any(length <= 0 for length in args.prompt_tokens):
+        print("error: prompt token lengths must be positive", file=sys.stderr)
+        return 2
+    if args.max_tokens <= 0:
+        print("error: --max-tokens must be positive", file=sys.stderr)
+        return 2
+    if max(args.prompt_tokens) + args.max_tokens > args.max_model_len:
+        print(
+            "error: prompt plus output length exceeds --max-model-len "
+            f"({max(args.prompt_tokens)} + {args.max_tokens} > "
+            f"{args.max_model_len})",
+            file=sys.stderr,
+        )
+        return 2
+    if args.exact_prompt_sweep and args.num_prompts != args.max_num_seqs:
+        print(
+            "error: exact prompt sweep requires --num-prompts to equal "
+            "--max-num-seqs so every cell is one full-concurrency batch",
+            file=sys.stderr,
+        )
         return 2
 
     if args.calibrate_k:
@@ -562,6 +890,11 @@ def main() -> int:
     print(f"correction installed; k={args.k*1000:.4f} us/KV-token, "
           f"configured profile context={profile_ctx}, "
           f"max model length={setup['max_model_len']}")
+
+    if args.exact_prompt_sweep:
+        return _run_exact_prompt_sweep(
+            llm, SamplingParams, args, profile_ctx, setup
+        )
 
     tok = llm.get_tokenizer()
     filler = " systems research and inference serving"
