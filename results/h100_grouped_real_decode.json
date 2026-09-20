@@ -1,0 +1,79 @@
+{
+  "kind": "real_decode_steps",
+  "sources": [
+    "results/h100_step_trace.json",
+    "results/sat_spec3_seqs16.json",
+    "results/sat_spec3_seqs64.json",
+    "results/sat_spec7_seqs16.json",
+    "results/sat_spec7_seqs64.json"
+  ],
+  "minimum_group_size": 3,
+  "by_target_token_count": [
+    {
+      "num_target_tokens": 64,
+      "count": 66,
+      "expected_median_ms": 5.068160176277161,
+      "measured_median_ms": 3.354896068572998,
+      "measured_q1_ms": 3.3269999623298645,
+      "measured_q3_ms": 3.3611039519309998
+    },
+    {
+      "num_target_tokens": 128,
+      "count": 29,
+      "expected_median_ms": 5.453760266304016,
+      "measured_median_ms": 3.493504047393799,
+      "measured_q1_ms": 3.4745919704437256,
+      "measured_q3_ms": 3.5033280849456787
+    },
+    {
+      "num_target_tokens": 192,
+      "count": 19,
+      "expected_median_ms": 8.347647905349731,
+      "measured_median_ms": 4.087103843688965,
+      "measured_q1_ms": 4.033663988113403,
+      "measured_q3_ms": 4.147423982620239
+    },
+    {
+      "num_target_tokens": 256,
+      "count": 30,
+      "expected_median_ms": 8.878528118133545,
+      "measured_median_ms": 4.340111970901489,
+      "measured_q1_ms": 4.308463931083679,
+      "measured_q3_ms": 4.422447919845581
+    },
+    {
+      "num_target_tokens": 384,
+      "count": 6,
+      "expected_median_ms": 9.674976110458374,
+      "measured_median_ms": 4.969519853591919,
+      "measured_q1_ms": 4.940048098564148,
+      "measured_q3_ms": 4.991815805435181
+    }
+  ],
+  "by_request_batch_size": [
+    {
+      "num_reqs": 16,
+      "count": 95,
+      "expected_median_ms": 5.068160176277161,
+      "measured_median_ms": 3.3599040508270264,
+      "measured_q1_ms": 3.3369919061660767,
+      "measured_q3_ms": 3.47599995136261
+    },
+    {
+      "num_reqs": 48,
+      "count": 25,
+      "expected_median_ms": 8.347647905349731,
+      "measured_median_ms": 4.0992960929870605,
+      "measured_q1_ms": 4.066080093383789,
+      "measured_q3_ms": 4.895328044891357
+    },
+    {
+      "num_reqs": 64,
+      "count": 30,
+      "expected_median_ms": 8.878528118133545,
+      "measured_median_ms": 4.340111970901489,
+      "measured_q1_ms": 4.308463931083679,
+      "measured_q3_ms": 4.422447919845581
+    }
+  ]
+}

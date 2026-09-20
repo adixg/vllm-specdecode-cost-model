@@ -1,0 +1,148 @@
+{
+  "kind": "controlled_probes",
+  "sources": [
+    "results/h100_e1.json",
+    "results/h100_e5.json"
+  ],
+  "minimum_group_size": 3,
+  "by_target_token_count": [
+    {
+      "num_target_tokens": 16,
+      "count": 105,
+      "expected_median_ms": 4.779776096343994,
+      "measured_median_ms": 3.543872117996216,
+      "measured_q1_ms": 3.50217604637146,
+      "measured_q3_ms": 3.647455930709839
+    },
+    {
+      "num_target_tokens": 32,
+      "count": 105,
+      "expected_median_ms": 8.507583618164062,
+      "measured_median_ms": 8.496928215026855,
+      "measured_q1_ms": 8.43289566040039,
+      "measured_q3_ms": 8.561056137084961
+    },
+    {
+      "num_target_tokens": 64,
+      "count": 105,
+      "expected_median_ms": 8.507583618164062,
+      "measured_median_ms": 8.319487571716309,
+      "measured_q1_ms": 8.264608383178711,
+      "measured_q3_ms": 8.36963176727295
+    },
+    {
+      "num_target_tokens": 128,
+      "count": 105,
+      "expected_median_ms": 8.507583618164062,
+      "measured_median_ms": 8.269920349121094,
+      "measured_q1_ms": 8.234784126281738,
+      "measured_q3_ms": 8.325183868408203
+    },
+    {
+      "num_target_tokens": 256,
+      "count": 105,
+      "expected_median_ms": 8.507583618164062,
+      "measured_median_ms": 8.204256057739258,
+      "measured_q1_ms": 8.151552200317383,
+      "measured_q3_ms": 8.290016174316406
+    },
+    {
+      "num_target_tokens": 512,
+      "count": 105,
+      "expected_median_ms": 8.507583618164062,
+      "measured_median_ms": 8.184672355651855,
+      "measured_q1_ms": 8.131263732910156,
+      "measured_q3_ms": 8.267487525939941
+    }
+  ],
+  "by_request_batch_size": [
+    {
+      "num_reqs": 1,
+      "count": 245,
+      "expected_median_ms": 2.257728099822998,
+      "measured_median_ms": 1.9631680250167847,
+      "measured_q1_ms": 1.9458880424499512,
+      "measured_q3_ms": 2.08351993560791
+    },
+    {
+      "num_reqs": 2,
+      "count": 245,
+      "expected_median_ms": 2.554271936416626,
+      "measured_median_ms": 2.020224094390869,
+      "measured_q1_ms": 1.9561280012130737,
+      "measured_q3_ms": 2.255647897720337
+    },
+    {
+      "num_reqs": 4,
+      "count": 245,
+      "expected_median_ms": 3.1516480445861816,
+      "measured_median_ms": 2.111840009689331,
+      "measured_q1_ms": 1.9823360443115234,
+      "measured_q3_ms": 2.5717759132385254
+    },
+    {
+      "num_reqs": 8,
+      "count": 245,
+      "expected_median_ms": 4.356607913970947,
+      "measured_median_ms": 2.289344072341919,
+      "measured_q1_ms": 2.054431915283203,
+      "measured_q3_ms": 3.1868159770965576
+    },
+    {
+      "num_reqs": 16,
+      "count": 245,
+      "expected_median_ms": 6.754079818725586,
+      "measured_median_ms": 2.6365439891815186,
+      "measured_q1_ms": 2.1526079177856445,
+      "measured_q3_ms": 4.419648170471191
+    },
+    {
+      "num_reqs": 24,
+      "count": 245,
+      "expected_median_ms": 9.133855819702148,
+      "measured_median_ms": 3.0394880771636963,
+      "measured_q1_ms": 2.3383359909057617,
+      "measured_q3_ms": 5.627039909362793
+    },
+    {
+      "num_reqs": 32,
+      "count": 245,
+      "expected_median_ms": 11.556032180786133,
+      "measured_median_ms": 3.347935914993286,
+      "measured_q1_ms": 2.4495038986206055,
+      "measured_q3_ms": 6.8545918464660645
+    },
+    {
+      "num_reqs": 40,
+      "count": 245,
+      "expected_median_ms": 13.945568084716797,
+      "measured_median_ms": 3.725087881088257,
+      "measured_q1_ms": 2.6341118812561035,
+      "measured_q3_ms": 8.078751564025879
+    },
+    {
+      "num_reqs": 48,
+      "count": 245,
+      "expected_median_ms": 16.284576416015625,
+      "measured_median_ms": 4.040639877319336,
+      "measured_q1_ms": 2.7141759395599365,
+      "measured_q3_ms": 9.303680419921875
+    },
+    {
+      "num_reqs": 56,
+      "count": 245,
+      "expected_median_ms": 18.74060821533203,
+      "measured_median_ms": 4.387872219085693,
+      "measured_q1_ms": 2.8674240112304688,
+      "measured_q3_ms": 10.508831977844238
+    },
+    {
+      "num_reqs": 64,
+      "count": 245,
+      "expected_median_ms": 20.959871292114258,
+      "measured_median_ms": 4.65561580657959,
+      "measured_q1_ms": 2.90118408203125,
+      "measured_q3_ms": 11.663104057312012
+    }
+  ]
+}
