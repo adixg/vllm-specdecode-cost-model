@@ -739,3 +739,71 @@ needed before generalizing the throughput result across context length. It has
 not yet been run.
 
 ---
+
+## E10 — the calibrated A/B: accurate costs make serving slightly *worse*
+
+`bench/serving_ab.py --calibrate-k` → `results/h100_calibrated_ab_spec7.json`
+Run and analysed by Aditya; supersedes the A/B reported in E9.
+
+**Two corrections to E9.** First, E9's A/B used `k = 0.0356 us/KV-token`, which
+was measured on **Qwen3-1.7B** and applied to MiniCPM5-2B. `k` is KV bytes per
+token over bandwidth and is therefore model-specific: calibrated in-engine for
+MiniCPM it is **0.0137**, 2.6x smaller. E9 was over-correcting. Second, E9 used
+six rounds at `spec=3`; this uses **twenty paired rounds at `spec=7`**, the
+block size every DSpark checkpoint declares.
+
+**Result: the correction is 0.365% SLOWER, and that is significant.**
+
+    mean   -0.365%      corrected faster in  6/20 rounds
+    median -0.379%      3.35 standard errors from zero
+
+    stock median throughput      10,971.9 tok/s
+    corrected median throughput  10,923.5 tok/s
+
+**The decisions really do change** — ceiling selection falls from 97.98% to
+89.17% — so this is not a null from the correction having no effect. It has an
+effect, in the wrong direction.
+
+**Why: the objective is greedy across steps.** With 64 requests at `spec=7` a
+full step is 64 decode positions plus 448 draft candidates. Stock overestimated
+a typical verification step at 8.622 ms against a corrected 6.030 ms, a median
+adjustment of **-2.585 ms**. Believing verification expensive, the stock policy
+kept nearly every draft token to amortise the target pass. Believing it cheaper,
+the corrected policy trimmed 8 or 16 candidates — saving drafter work but
+leaving some requests unfinished, which produced **13 additional decode batches
+across 20 paired rounds** (347 → 360).
+
+`argmax(accepted / cost)` maximises accepted tokens per millisecond **for the
+current step only**. It does not price the future cost of needing another
+decode iteration. So a more accurate cost feeds a myopic objective and yields a
+worse schedule.
+
+**The project's central result, then:** vLLM's verification cost model is wrong
+by up to 203%, one scalar makes it 42x more accurate out-of-sample, and
+deploying that accuracy makes serving **0.37% slower** — because the decision it
+feeds is saturated at its ceiling 98% of the time, and the existing error
+happens to bias toward that ceiling, which is nearly the right answer.
+
+This is not "accurate costs are bad". It is that **prediction quality and
+decision quality are separate problems**, and improving the first without
+fixing the objective can move the second backwards.
+
+**Saturation is not an artifact of `spec=3`.** All four configurations in the
+saturation sweep — `spec` 3 and 7 crossed with `max_num_seqs` 16 and 64 — sat
+at the ceiling on every recorded step.
+
+**Method notes** (all from the calibrated harness):
+- `k` is calibrated inside the same live DSpark engine the A/B runs in, not
+  imported from another model or another run.
+- The profile baseline is reconstructed properly, including max-length capping,
+  query tokens, CUDA-graph padding and eager-tail interpolation.
+- Stock/corrected order alternates within paired rounds; rounds require equal
+  output-token counts; selections that hit the minimum positive-cost clamp are
+  rejected.
+
+**What remains untested.** Every A/B so far ran with contexts *below* the 8192
+profile point, where stock overpredicts. Above it the sign flips and the
+correction pushes the budget *up* instead of down — the opposite intervention.
+`pace/run_ab_longctx.sbatch` tests that direction.
+
+---
