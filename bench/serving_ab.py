@@ -200,8 +200,19 @@ def _install_correction(
     self: "Worker",
     k_ms_per_kv_token: float,
     configured_profile_ctx: int,
+    overhead_ms: float = 0.0,
 ) -> dict:
-    """Wrap the budget decision so the correction can be toggled per round."""
+    """Wrap the budget decision so the correction can be toggled per round.
+
+    overhead_ms is a per-step cost the stock tables leave out (scheduling,
+    input prep, sampling, CPU gaps between kernels). The decision rule picks
+    argmax accepted(b) / cost(b). Scaling every cost by a constant would not
+    change that argmax, but ADDING a constant does: a bigger fixed cost per
+    step makes it worth keeping more drafts, because each step has to
+    "pay for itself". The corrected arm adds overhead_ms to every cost.
+    """
+    import time
+
     import numpy as np
 
     runner = self.model_runner
@@ -280,6 +291,8 @@ def _install_correction(
     self._ab_enabled = False          # flipped between rounds from the host
     self._ab_offsets = []             # for reporting how large the change was
     self._ab_decisions = []           # budget and clamp diagnostics
+    self._ab_overhead_ms = float(overhead_ms)  # can be changed by _set_overhead
+    self._ab_prev = None              # (time, decision) of the previous step
     original = av.get_num_tokens
 
     def corrected_get_num_tokens(num_tokens_per_req, draft_tokens):
@@ -290,19 +303,24 @@ def _install_correction(
 
         chosen_offset = 0.0
         clamped_entries = 0
+        # Apply a vector correction because graph padding means neighboring
+        # candidate budgets may share one profiled table point. The real
+        # aggregate sequence length is current context plus candidate query
+        # tokens; the reconstructed profile includes both terms as well.
+        # Computed in BOTH arms (the stock arm only uses it for the step-time
+        # prediction below, never for the decision).
+        candidate_tokens = np.arange(len(verify_t), dtype=np.float64)
+        real_sum_seq_lens = real_ctx + candidate_tokens
+        offsets = k_ms_per_kv_token * (
+            real_sum_seq_lens
+            - profiled_sum_seq_lens_table[:len(verify_t)]
+        )
         if self._ab_enabled:
-            # Apply a vector correction because graph padding means neighboring
-            # candidate budgets may share one profiled table point. The real
-            # aggregate sequence length is current context plus candidate query
-            # tokens; the reconstructed profile includes both terms as well.
-            candidate_tokens = np.arange(len(verify_t), dtype=np.float64)
-            real_sum_seq_lens = real_ctx + candidate_tokens
-            offsets = k_ms_per_kv_token * (
-                real_sum_seq_lens
-                - profiled_sum_seq_lens_table[:len(verify_t)]
-            )
             shifted = verify_t + offsets
             clamped_entries = int(np.count_nonzero(shifted <= 0))
+            # The overhead is the same for every candidate budget, so it is
+            # added after the clamp check: it can only make costs larger.
+            shifted = shifted + self._ab_overhead_ms
             av.cost_tables = (draft_t, np.maximum(shifted, 1e-6))
 
         try:
@@ -330,7 +348,7 @@ def _install_correction(
                 and chosen_idx < len(verify_t)
                 and verify_t[chosen_idx] + chosen_offset <= 0
             )
-            self._ab_decisions.append({
+            decision = {
                 "corrected": bool(self._ab_enabled),
                 "num_reqs": len(req_ids),
                 "total_context": real_ctx,
@@ -351,7 +369,28 @@ def _install_correction(
                 "offset_ms": chosen_offset,
                 "clamped_entries": clamped_entries,
                 "chosen_was_clamped": chosen_was_clamped,
-            })
+                "overhead_ms": self._ab_overhead_ms if self._ab_enabled else 0.0,
+                # Best available prediction of this step's cost: drafter plus
+                # the k-CORRECTED verify cost. Using the stock verify cost here
+                # would fold the stock table's context error into the overhead
+                # (at short contexts stock overpredicts by ~3.5 ms, which would
+                # hide the overhead we are trying to measure).
+                "predicted_step_ms": float(
+                    draft_t[len(req_ids)]
+                    + max(verify_t[chosen_idx] + offsets[chosen_idx], 1e-6)
+                ),
+                # Real wall time until the next decision, i.e. how long this
+                # step actually took. Filled in when the next step arrives;
+                # stays None for the last step of a round.
+                "step_interval_ms": None,
+            }
+            self._ab_decisions.append(decision)
+
+            now = time.perf_counter()
+            if self._ab_prev is not None:
+                prev_time, prev_decision = self._ab_prev
+                prev_decision["step_interval_ms"] = (now - prev_time) * 1000.0
+            self._ab_prev = (now, decision)
             return num_tokens
         finally:
             if self._ab_enabled:
@@ -373,7 +412,33 @@ def _set_mode(self: "Worker", enabled: bool) -> dict:
     n = len(getattr(self, "_ab_offsets", []))
     self._ab_offsets = []
     self._ab_decisions = []
+    self._ab_prev = None   # never measure a "step" that spans two rounds
     return {"enabled": self._ab_enabled, "offsets_last_round": n}
+
+
+def _set_overhead(self: "Worker", overhead_ms: float) -> float:
+    self._ab_overhead_ms = float(overhead_ms)
+    return self._ab_overhead_ms
+
+
+def estimate_overhead_ms(decisions: list[dict]) -> tuple[float, int]:
+    """Median of (real step time - predicted step time) over stock decode steps.
+
+    Only stock steps are used, so the estimate does not depend on the
+    correction it feeds. Only pure decode steps are used (one non-draft token
+    per request), since prefill steps are priced differently. Returns the
+    estimate, floored at zero, and how many steps it came from.
+    """
+    gaps = [
+        d["step_interval_ms"] - d["predicted_step_ms"]
+        for d in decisions
+        if not d["corrected"]
+        and d["step_interval_ms"] is not None
+        and d["non_draft_tokens"] == d["num_reqs"]
+    ]
+    if not gaps:
+        return 0.0, 0
+    return max(0.0, statistics.median(gaps)), len(gaps)
 
 
 def _drain_ab_trace(self: "Worker") -> dict:
@@ -514,6 +579,7 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
     print(f"\nwarmup: {args.warmup_rounds} paired round(s) per input length")
 
     warmup_corrected_traces = {length: [] for length in prompt_lengths}
+    warmup_stock_decisions = []   # used to estimate --overhead-ms auto
     for warmup_round in range(args.warmup_rounds):
         length_order = (prompt_lengths if warmup_round % 2 == 0
                         else list(reversed(prompt_lengths)))
@@ -525,6 +591,24 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
                 _, _, trace = one_round(length, enabled)
                 if enabled:
                     warmup_corrected_traces[length].extend(trace["decisions"])
+                else:
+                    warmup_stock_decisions.extend(trace["decisions"])
+
+    # One overhead for all input lengths, as a real deployment would have to
+    # use: it is pooled across every length's stock warmup steps.
+    overhead_source = "fixed"
+    overhead_steps = 0
+    if args.overhead_ms == "auto":
+        overhead_ms, overhead_steps = estimate_overhead_ms(
+            warmup_stock_decisions
+        )
+        overhead_source = "auto"
+        llm.collective_rpc(_set_overhead, args=(overhead_ms,))
+        print(f"\nestimated per-step overhead: {overhead_ms:.3f} ms "
+              f"(median over {overhead_steps} stock warmup decode steps)")
+    else:
+        overhead_ms = float(args.overhead_ms)
+    print(f"corrected arm adds {overhead_ms:.3f} ms to every step cost")
 
     for length, decisions in warmup_corrected_traces.items():
         clamped = [d for d in decisions if d["chosen_was_clamped"]]
@@ -670,6 +754,11 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
             "ignore_eos": True,
         },
         "correction_setup": setup,
+        "overhead": {
+            "ms": overhead_ms,
+            "source": overhead_source,
+            "estimated_from_steps": overhead_steps,
+        },
         "workloads": workload_results,
     }
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -714,8 +803,30 @@ def main() -> int:
         help=("run one homogeneous workload per --prompt-tokens value using "
               "token-ID inputs with exact lengths"),
     )
+    p.add_argument(
+        "--overhead-ms",
+        default="0",
+        help=("per-step overhead (ms) added to every cost in the corrected "
+              "arm, or 'auto' to estimate it from the stock warmup rounds "
+              "(auto needs --exact-prompt-sweep). Default 0 = k-only, the "
+              "same as earlier runs."),
+    )
     p.add_argument("--out", default="results/serving_ab.json")
     args = p.parse_args()
+
+    if args.overhead_ms == "auto":
+        if not args.exact_prompt_sweep:
+            print("error: --overhead-ms auto requires --exact-prompt-sweep",
+                  file=sys.stderr)
+            return 1
+    else:
+        try:
+            if float(args.overhead_ms) < 0:
+                raise ValueError
+        except ValueError:
+            print("error: --overhead-ms must be 'auto' or a number >= 0",
+                  file=sys.stderr)
+            return 1
 
     if args.rounds < 2 or args.warmup_rounds < 1:
         print("error: use at least 2 measured rounds and 1 warmup round",
@@ -880,9 +991,12 @@ def main() -> int:
 
     assert args.k is not None
 
+    # With 'auto', start at 0; the sweep sets the estimate after warmup.
+    initial_overhead_ms = (0.0 if args.overhead_ms == "auto"
+                           else float(args.overhead_ms))
     setup = llm.collective_rpc(
         _install_correction,
-        args=(args.k, profile_ctx),
+        args=(args.k, profile_ctx, initial_overhead_ms),
     )[0]
     if not setup.get("ok"):
         print(f"error: {setup.get('why')}", file=sys.stderr)

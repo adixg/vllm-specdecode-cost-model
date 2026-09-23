@@ -30,6 +30,7 @@ head_dim 128 → 112 KB KV per token), RTX 4060 Laptop (sm_89, ~7950 MB usable,
 | **E8** | Does error change sign beyond the profile context? | contexts 1,024-32,000 on H100 | yes; scalar correction cuts median error **42x** |
 | **E9** | First serving A/B and saturation sweep | spec 3/7, concurrency 16/64 | saturation is real; A/B result is **superseded** |
 | **E10** | Calibrated in-engine MiniCPM spec-7 A/B | 20 paired rounds, exact profile reconstruction | correction changes decisions but throughput is **0.365% lower** |
+| **E11** | Does the penalty vary with context? | ctx 64-3,000 (5 jobs) and 9,000-13,000 | a **cliff**: **-3.6%** at ctx=64, null everywhere else |
 
 Sections below are in experiment order. Numbering is historical, not
 chronological: E5 was run before E3.
@@ -805,5 +806,94 @@ at the ceiling on every recorded step.
 profile point, where stock overpredicts. Above it the sign flips and the
 correction pushes the budget *up* instead of down — the opposite intervention.
 `pace/run_ab_longctx.sbatch` tests that direction.
+
+---
+
+## E11 — the context sweep: the penalty is a cliff, not a gradient
+
+`pace/run_ctx_one.sbatch` (five jobs, `CTX` = 64/512/1024/2048/3000) →
+`results/ab_spec7_ctx*.json`, plus `pace/run_ab_longctx.sbatch` →
+`results/h100_ab_longctx.json`. Run by Aditya. Supersedes E10 as the headline
+result: E10 measured one workload, this measures the whole range.
+
+Each job is independent, 25 minutes, and recalibrates `k` inside its own
+engine. Prompts are exact token-id sequences of the stated length, verified
+every round; 20 paired rounds with alternating stock/corrected order and equal
+output-token counts enforced.
+
+**`k` is a stable constant, not a per-run fit.**
+
+    ctx      64      512     1024     2048     3000
+    k    1.404    1.405    1.369    1.370    1.370   (x 1e-5 ms/KV-token)
+
+Five independent in-engine calibrations spanning 2.6%. Splitting the sweep into
+one job per length for scheduling reasons turned a single fitted number into a
+measured constant with an error bar.
+
+**Result: correcting the cost model is neutral in four regimes and severely
+harmful in the fifth.**
+
+    ctx    mean d      SE       t     ceiling %      decode steps   rounds won
+     64   -3.604%   0.083%  -43.26   58.3 -> 45.9     480 -> 519        0/20
+    512   -0.046%   0.132%   -0.35   99.8 -> 95.7     461 -> 460        7/20
+   1024   -0.034%   0.110%   -0.31   92.3 -> 92.3     520 -> 520       11/20
+   2048   +0.305%   0.109%   +2.79   93.1 -> 89.7     580 -> 580       13/20
+   3000   +0.026%   0.129%   +0.20   97.0 -> 97.0     660 -> 660        9/20
+
+Per-round noise is 1.4-2.1% throughout, so everything except ctx=64 is inside
+the measurement floor. The +0.305% at ctx=2048 is one marginal result among
+five comparisons and is not claimed as a win.
+
+**The effect is a cliff.** The natural prediction was a smooth decay as context
+approaches the 8192 profile point, since the mispricing shrinks as real context
+approaches the assumed one. That is not what happens: -3.6% at ctx=64, gone by
+ctx=512.
+
+**The ceiling fraction explains it.** At ctx=64 the stock policy sits at its
+ceiling only 58.3% of the time, so there is real headroom for a different cost
+table to choose differently — and it does, falling to 45.9% and paying for it
+with **39 extra decode steps** (480 -> 519). From ctx=512 upward the stock
+policy is already pinned at the ceiling 92-99.8% of the time. There is nothing
+left for a correction to change, so it changes nothing.
+
+This is the E10 mechanism with a dose-response attached. The size of the
+penalty tracks the *available headroom*, not the size of the pricing error.
+Where the decision is saturated the cost model is irrelevant; where it is not,
+being accurate costs 3.6%.
+
+**Above the profile point: null.** `run_ab_longctx` at 9,000 / 11,000 / 13,000
+token prompts (`max_model_len` 16,384, 12 paired rounds) — the one regime where
+stock *under*-predicts and the correction pushes the budget up rather than down:
+
+    delta  -0.104%      per-round noise  1.08%
+    stock median      977.7 tok/s
+    corrected median  976.3 tok/s
+
+A delta ten times smaller than the noise is a null, not a demonstration of
+zero. What it does establish is that the sign flip predicted in E8 and left
+untested at the end of E10 does not produce a win either.
+
+**Where this leaves the project.** Across contexts from 64 to 13,000 tokens,
+making vLLM's verification cost model accurate never improved serving
+throughput and cost up to 3.6% when the decision had room to move. The
+mispricing is real (E1, E6, E8) and one scalar fixes it (E4, E8) — but the
+policy it feeds is saturated almost everywhere, and where it is not, the error
+was biasing toward the ceiling, which is the better answer.
+
+**Next, and the first hypothesis that could come out positive.**
+`bench/serving_ab.py` now takes `--overhead-ms`: a fixed per-step cost the
+stock tables omit (scheduling, input preparation, sampling, CPU gaps between
+kernels). Because the rule is `argmax(accepted / cost)`, scaling every cost
+leaves the choice untouched while *adding* a constant does not — a larger fixed
+cost per step makes it worth keeping more drafts, since each step has to pay
+for itself. That pushes the budget toward the ceiling rather than away from it.
+ctx=64 is the only regime with headroom to show it:
+
+    sbatch --export=ALL,CTX=64,OVERHEAD=auto pace/run_ctx_one.sbatch
+
+**Method note.** The `#SBATCH --output` directives in `run_ctx_one.sbatch`
+contain a literal `${CTX}`: SLURM parses those lines as comments before any
+shell runs, so the variable does not expand. Jobs did not collide only because
+`%j` differs. Log files from this run are named `ctx-one-<jobid>-ctx${CTX}`.
 
 ---

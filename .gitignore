@@ -5,3 +5,12 @@ __pycache__/
 
 # Local drafts (email/PR text), not project artifacts
 notes/
+
+# Local scratch, not project artifacts
+MISSION.md
+RESOURCES.md
+NOTES.md
+lessons/
+reference/
+learning-records/
+assets/

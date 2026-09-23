@@ -22,12 +22,21 @@ set -uo pipefail
 #       sbatch --export=ALL,CTX=$CTX pace/run_ctx_one.sbatch
 #   done
 #
+# Optional OVERHEAD (ms, or "auto") adds a per-step overhead term to the
+# corrected arm. Unset = 0 = the original k-only A/B and file names.
+#
+#   sbatch --export=ALL,CTX=64,OVERHEAD=auto pace/run_ctx_one.sbatch
+#
 # Each job recalibrates k in-engine. That repeats ~2 minutes of work five times
 # rather than sharing it once, which is the price of being schedulable - and it
 # has a real benefit: five independent calibrations show whether k is stable
 # across runs, which a single shared calibration cannot.
 
 : "${CTX:?set CTX, e.g. sbatch --export=ALL,CTX=2048 pace/run_ctx_one.sbatch}"
+OVERHEAD="${OVERHEAD:-0}"
+# Keep k-only results under their old names; tag overhead runs.
+TAG=""
+[[ "$OVERHEAD" != "0" ]] && TAG="_oh${OVERHEAD}"
 
 echo "=== GPU ==="
 nvidia-smi --query-gpu=name,compute_cap --format=csv
@@ -44,7 +53,7 @@ export HF_HUB_OFFLINE=1
 export VLLM_USE_V2_MODEL_RUNNER=1
 mkdir -p results logs
 
-echo "=== exact-token A/B at ctx=$CTX, spec=7 ($(date +%T)) ==="
+echo "=== exact-token A/B at ctx=$CTX, overhead=$OVERHEAD, spec=7 ($(date +%T)) ==="
 python bench/serving_ab.py \
     --model openbmb/MiniCPM5-2B \
     --draft openbmb/MiniCPM5-2B-DSpark \
@@ -57,13 +66,14 @@ python bench/serving_ab.py \
     --calibration-context-lens 0 1024 2048 3072 4096 \
     --calibration-replays 25 \
     --calibration-warmup 5 \
-    --calibration-out "results/k_spec7_ctx${CTX}.json" \
+    --calibration-out "results/k_spec7_ctx${CTX}${TAG}.json" \
     --num-prompts 64 \
     --max-tokens 128 \
     --prompt-tokens "$CTX" \
     --exact-prompt-sweep \
     --warmup-rounds 2 \
     --rounds 20 \
-    --out "results/ab_spec7_ctx${CTX}.json"
+    --overhead-ms "$OVERHEAD" \
+    --out "results/ab_spec7_ctx${CTX}${TAG}.json"
 
 echo "=== done ($(date +%T)) ==="
