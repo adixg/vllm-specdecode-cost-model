@@ -201,6 +201,7 @@ def _install_correction(
     k_ms_per_kv_token: float,
     configured_profile_ctx: int,
     overhead_ms: float = 0.0,
+    arm_b: str = "corrected",
 ) -> dict:
     """Wrap the budget decision so the correction can be toggled per round.
 
@@ -293,6 +294,7 @@ def _install_correction(
     self._ab_decisions = []           # budget and clamp diagnostics
     self._ab_overhead_ms = float(overhead_ms)  # can be changed by _set_overhead
     self._ab_prev = None              # (time, decision) of the previous step
+    self._ab_arm_b = str(arm_b)       # "corrected" (k-fix) or "ceiling"
     original = av.get_num_tokens
 
     def corrected_get_num_tokens(num_tokens_per_req, draft_tokens):
@@ -315,7 +317,19 @@ def _install_correction(
             real_sum_seq_lens
             - profiled_sum_seq_lens_table[:len(verify_t)]
         )
-        if self._ab_enabled:
+        if self._ab_enabled and self._ab_arm_b == "ceiling":
+            # "Always take every draft token on offer", implemented without
+            # touching vLLM's decision code at all.
+            #
+            # The rule is argmax(estimated_accepted / cost). vLLM builds
+            # estimated_accepted as a cumulative sum of survival probabilities,
+            # so it is non-decreasing in the budget, and the draft-cost term is
+            # the same for every candidate. Make every verify cost equal and
+            # the denominator becomes a constant, so the argmax is just
+            # argmax(estimated_accepted) - which is always the largest budget,
+            # i.e. the ceiling.
+            av.cost_tables = (draft_t, np.ones_like(verify_t))
+        elif self._ab_enabled:
             shifted = verify_t + offsets
             clamped_entries = int(np.count_nonzero(shifted <= 0))
             # The overhead is the same for every candidate budget, so it is
@@ -340,11 +354,12 @@ def _install_correction(
 
             non_draft_total = int(sum(non_draft_per_req.values()))
             chosen_idx = non_draft_total + int(draft_budget)
-            chosen_offset = float(offsets[chosen_idx]) if self._ab_enabled else 0.0
-            if self._ab_enabled:
+            applies_offset = self._ab_enabled and self._ab_arm_b == "corrected"
+            chosen_offset = float(offsets[chosen_idx]) if applies_offset else 0.0
+            if applies_offset:
                 self._ab_offsets.append(chosen_offset)
             chosen_was_clamped = bool(
-                self._ab_enabled
+                applies_offset
                 and chosen_idx < len(verify_t)
                 and verify_t[chosen_idx] + chosen_offset <= 0
             )
@@ -511,6 +526,66 @@ def _decision_summary(decisions: list[dict]) -> dict:
     }
 
 
+def _acceptance_snapshot(llm) -> dict:
+    """Read vLLM's cumulative speculative-decoding counters.
+
+    These are engine-lifetime totals, so a per-round figure is the difference
+    between a snapshot taken before and after that round.
+
+    num_accepted_tokens_per_pos is a SURVIVAL curve, not a histogram: entry i
+    counts drafts where at least i+1 tokens were accepted. _acceptance_delta
+    converts it to "exactly n accepted".
+    """
+    out = {"num_drafts": None, "num_accepted_tokens": None, "per_pos": None}
+    try:
+        for metric in llm.llm_engine.get_metrics():
+            name = getattr(metric, "name", "")
+            value = getattr(metric, "value", None)
+            if value is None:
+                value = getattr(metric, "values", None)
+            if name.endswith("spec_decode_num_drafts"):
+                out["num_drafts"] = value
+            elif name.endswith("spec_decode_num_accepted_tokens"):
+                out["num_accepted_tokens"] = value
+            elif name.endswith("spec_decode_num_accepted_tokens_per_pos"):
+                out["per_pos"] = list(value) if value is not None else None
+    except Exception as exc:                       # metrics are best-effort
+        out["error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _acceptance_delta(before: dict, after: dict) -> dict:
+    """Per-round acceptance, including an 'exactly n accepted' histogram."""
+    def diff(key):
+        a, b = after.get(key), before.get(key)
+        return None if a is None or b is None else a - b
+
+    drafts = diff("num_drafts")
+    accepted = diff("num_accepted_tokens")
+    survival = None
+    if before.get("per_pos") and after.get("per_pos"):
+        survival = [a - b for a, b in zip(after["per_pos"], before["per_pos"])]
+
+    histogram = None
+    if survival is not None and drafts is not None:
+        # survival[i] = drafts with >= i+1 accepted. Differencing gives
+        # "exactly i accepted"; position 0 is everything that survived none.
+        histogram = [drafts - survival[0]]
+        for i in range(len(survival) - 1):
+            histogram.append(survival[i] - survival[i + 1])
+        histogram.append(survival[-1])
+
+    return {
+        "num_drafts": drafts,
+        "num_accepted_tokens": accepted,
+        "mean_accepted_per_draft": (
+            accepted / drafts if drafts else None
+        ),
+        "survival_per_pos": survival,
+        "exactly_n_accepted": histogram,
+    }
+
+
 def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
                             setup: dict) -> int:
     """Run homogeneous exact-length workloads in one calibrated engine."""
@@ -542,6 +617,7 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
 
     def one_round(prompt_length: int, enabled: bool) -> tuple[float, int, dict]:
         llm.collective_rpc(_set_mode, args=(enabled,))
+        accept_before = _acceptance_snapshot(llm)
         start = time.perf_counter()
         outputs = llm.generate(
             prompts_by_length[prompt_length],
@@ -550,6 +626,9 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
         )
         duration = time.perf_counter() - start
         trace = llm.collective_rpc(_drain_ab_trace)[0]
+        trace["acceptance"] = _acceptance_delta(
+            accept_before, _acceptance_snapshot(llm)
+        )
 
         actual_prompt_lengths = [len(output.prompt_token_ids)
                                  for output in outputs]
@@ -629,6 +708,9 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
             "output_tokens": {"stock": [], "corrected": []},
             "round_orders": [],
             "decision_traces": {"stock": [], "corrected": []},
+            # one entry per measured round, in round order, so any change in
+            # acceptance as generation proceeds is visible
+            "acceptance_by_round": {"stock": [], "corrected": []},
         }
         for length in prompt_lengths
     }
@@ -652,6 +734,7 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
                 cell[f"{name}_tok_s"].append(output_tokens / duration)
                 cell["output_tokens"][name].append(output_tokens)
                 cell["decision_traces"][name].extend(trace["decisions"])
+                cell["acceptance_by_round"][name].append(trace["acceptance"])
                 print(f"{round_index + 1:>6} {length:>7} {name:>10} "
                       f"{duration:>9.3f} {output_tokens:>9} "
                       f"{output_tokens / duration:>9.1f}")
@@ -740,11 +823,13 @@ def _run_exact_prompt_sweep(llm, sampling_params_cls, args, profile_ctx: int,
                 for name in ("stock", "corrected")
             },
             "decision_traces": traces,
+            "acceptance_by_round": cell["acceptance_by_round"],
         })
 
     result = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "experiment": "exact_prompt_context_sweep",
+        "arm_b": args.arm_b,
         "args": vars(args),
         "profile_context_len": profile_ctx,
         "prompt_construction": {
@@ -810,6 +895,13 @@ def main() -> int:
               "arm, or 'auto' to estimate it from the stock warmup rounds "
               "(auto needs --exact-prompt-sweep). Default 0 = k-only, the "
               "same as earlier runs."),
+    )
+    p.add_argument(
+        "--arm-b", choices=("corrected", "ceiling"), default="corrected",
+        help="what the second arm does. 'corrected' applies the k cost fix; "
+             "'ceiling' ignores the cost model and always takes every draft "
+             "token available, to test whether adaptive verification is "
+             "earning anything on this workload.",
     )
     p.add_argument("--out", default="results/serving_ab.json")
     args = p.parse_args()
@@ -996,7 +1088,7 @@ def main() -> int:
                            else float(args.overhead_ms))
     setup = llm.collective_rpc(
         _install_correction,
-        args=(args.k, profile_ctx, initial_overhead_ms),
+        args=(args.k, profile_ctx, initial_overhead_ms, args.arm_b),
     )[0]
     if not setup.get("ok"):
         print(f"error: {setup.get('why')}", file=sys.stderr)
