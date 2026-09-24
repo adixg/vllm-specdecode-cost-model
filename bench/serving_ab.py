@@ -326,8 +326,14 @@ def _install_correction(
             # so it is non-decreasing in the budget, and the draft-cost term is
             # the same for every candidate. Make every verify cost equal and
             # the denominator becomes a constant, so the argmax is just
-            # argmax(estimated_accepted) - which is always the largest budget,
-            # i.e. the ceiling.
+            # argmax(estimated_accepted). Because np.argmax returns the FIRST
+            # maximal index, this is precisely "admit every slot that still
+            # adds expected value": if the trailing slots had exactly zero
+            # survival probability it would stop short of the literal ceiling,
+            # with identical expected accepted tokens. Survival probabilities
+            # are products of ~0.6 confidences over 7 positions, so they do not
+            # reach zero in practice - but check at_ceiling in the resulting
+            # trace rather than assuming it.
             av.cost_tables = (draft_t, np.ones_like(verify_t))
         elif self._ab_enabled:
             shifted = verify_t + offsets
@@ -579,7 +585,7 @@ def _acceptance_delta(before: dict, after: dict) -> dict:
         "num_drafts": drafts,
         "num_accepted_tokens": accepted,
         "mean_accepted_per_draft": (
-            accepted / drafts if drafts else None
+            accepted / drafts if drafts and accepted is not None else None
         ),
         "survival_per_pos": survival,
         "exactly_n_accepted": histogram,
