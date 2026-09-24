@@ -1,13 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=ceiling-ab
-#SBATCH --account=gts-tkrishna3
 #SBATCH --partition=ice-gpu
-#SBATCH --gres=gpu:H100:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --gres=gpu:h100:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
 #SBATCH --time=00:25:00
-#SBATCH --output=logs/ceiling-ab-%j.out
-#SBATCH --error=logs/ceiling-ab-%j.err
+#SBATCH --output=logs/%x-%j.out
+#SBATCH --error=logs/%x-%j.err
 
 set -uo pipefail
 
