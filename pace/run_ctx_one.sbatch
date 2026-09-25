@@ -49,8 +49,7 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate ~/scratch/conda-envs/cs6222
 
 export HF_HOME="${HF_HOME:-$HOME/scratch/hf}"
-export HF_HUB_OFFLINE=1
-export VLLM_USE_V2_MODEL_RUNNER=1
+source "${SLURM_SUBMIT_DIR:-$(pwd)}/pace/env.sh"
 mkdir -p results logs
 
 echo "=== exact-token A/B at ctx=$CTX, overhead=$OVERHEAD, spec=7 ($(date +%T)) ==="
