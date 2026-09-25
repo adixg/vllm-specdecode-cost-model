@@ -54,9 +54,27 @@ module load anaconda3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate ~/scratch/conda-envs/cs6222
 
+# Do not rely on HF_HOME surviving from the submitting shell. Jobs 5922739
+# and 5922740 died because it did not: with HF_HUB_OFFLINE=1 and no cache
+# path, vLLM looked in the default location, found nothing, and could not
+# download. Default it here so the job is self-contained.
+export HF_HOME="${HF_HOME:-$HOME/scratch/hf}"
 export HF_HUB_OFFLINE=1
 export VLLM_USE_V2_MODEL_RUNNER=1
 mkdir -p results logs
+
+# Fail in seconds rather than after eight minutes of Lustre lookups.
+for repo in models--openbmb--MiniCPM5-2B models--openbmb--MiniCPM5-2B-DSpark; do
+    if [[ ! -d "$HF_HOME/hub/$repo" ]]; then
+        echo "error: $repo is not in the HF cache at $HF_HOME/hub" >&2
+        echo "       on a login node, run:" >&2
+        echo "         export HF_HOME=$HF_HOME" >&2
+        id="${repo#models--}"; id="${id/--//}"      # models--org--name -> org/name
+        echo "         HF_HUB_OFFLINE=0 hf download $id" >&2
+        exit 1
+    fi
+done
+echo "HF cache: $HF_HOME/hub"
 
 echo "=== stock vs always-ceiling at ctx=$CTX, spec=7 ($(date +%T)) ==="
 python bench/serving_ab.py \
@@ -74,5 +92,7 @@ python bench/serving_ab.py \
     --warmup-rounds 2 \
     --rounds 20 \
     --out "results/ceiling_ab_ctx${CTX}.json"
+status=$?
 
-echo "=== done ($(date +%T)) ==="
+echo "=== done ($(date +%T)), exit status $status ==="
+exit $status
