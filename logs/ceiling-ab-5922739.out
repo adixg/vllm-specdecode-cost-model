@@ -1,0 +1,27 @@
+---------------------------------------
+Begin Slurm Prolog: Sep-24-2026 23:07:47
+Job ID:    5922739
+User ID:   aghosh367
+Account:   coc
+Job name:  ceiling-ab
+Partition: ice-gpu
+QOS:       coc-ice
+---------------------------------------
+=== GPU ===
+name, compute_cap
+NVIDIA H100 80GB HBM3, 9.0
+compute capability 9.0 - FA3 available
+=== stock vs always-ceiling at ctx=64, spec=7 (23:07:52) ===
+=== done (23:16:11) ===
+---------------------------------------
+Begin Slurm Epilog: Sep-24-2026 23:16:11
+Job ID:        5922739
+User ID:       aghosh367
+Account:       coc
+Job name:      ceiling-ab
+Resources:     cpu=4,gres/gpu:h100=1,mem=32G,node=1
+Rsrc Used:     cput=00:33:44,vmem=0,walltime=00:08:26,mem=1336896K,energy_used=0
+Partition:     ice-gpu
+QOS:           coc-ice
+Nodes:         atl1-1-03-013-13-0
+---------------------------------------
