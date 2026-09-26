@@ -1,0 +1,153 @@
+---------------------------------------
+Begin Slurm Prolog: Sep-26-2026 00:36:24
+Job ID:    5947253
+User ID:   aghosh367
+Account:   coc
+Job name:  ceiling-seqs
+Partition: ice-gpu
+QOS:       coc-ice
+---------------------------------------
+=== GPU ===
+name, compute_cap
+NVIDIA H100 80GB HBM3, 9.0
+compute capability 9.0 - FA3 available
+HF cache: /home/hice1/aghosh367/scratch/hf/hub
+=== stock vs always-ceiling at seqs=256, ctx=64, spec=7 (00:36:28) ===
+INFO 09-26 00:37:41 [arg_utils.py:813] HF_HUB_OFFLINE is True, replace model_id [openbmb/MiniCPM5-2B] to model_path [/storage/ice1/8/7/aghosh367/hf/hub/models--openbmb--MiniCPM5-2B/snapshots/12a3808a956f869c767195e9266b59c4d21d92e2]
+INFO 09-26 00:37:41 [api_utils.py:272] non-default args: {'max_model_len': 4096, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.85, 'max_num_seqs': 256, 'speculative_config': {'method': 'dspark', 'model': 'openbmb/MiniCPM5-2B-DSpark', 'num_speculative_tokens': 7, 'enable_adaptive_verification': True}, 'model': '/storage/ice1/8/7/aghosh367/hf/hub/models--openbmb--MiniCPM5-2B/snapshots/12a3808a956f869c767195e9266b59c4d21d92e2'}
+INFO 09-26 00:37:41 [model.py:672] Resolved architecture: LlamaForCausalLM
+INFO 09-26 00:37:41 [model.py:1965] Using max model len 4096
+INFO 09-26 00:37:41 [model.py:672] Resolved architecture: Qwen3DSparkModel
+INFO 09-26 00:37:41 [model.py:1965] Using max model len 131072
+INFO 09-26 00:37:41 [speculative.py:1220] Overriding draft model max model len from 131072 to 4096
+INFO 09-26 00:37:41 [scheduler.py:242] Chunked prefill is enabled with max_num_batched_tokens=16384.
+INFO 09-26 00:37:41 [kernel.py:308] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=2769861) INFO 09-26 00:37:43 [core.py:122] Initializing a V1 LLM engine (v0.28.0) with config: model='/storage/ice1/8/7/aghosh367/hf/hub/models--openbmb--MiniCPM5-2B/snapshots/12a3808a956f869c767195e9266b59c4d21d92e2', speculative_config=SpeculativeConfig(method='dspark', model='openbmb/MiniCPM5-2B-DSpark', num_spec_tokens=7), tokenizer='/storage/ice1/8/7/aghosh367/hf/hub/models--openbmb--MiniCPM5-2B/snapshots/12a3808a956f869c767195e9266b59c4d21d92e2', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/storage/ice1/8/7/aghosh367/hf/hub/models--openbmb--MiniCPM5-2B/snapshots/12a3808a956f869c767195e9266b59c4d21d92e2, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [16384], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 272, 288, 304, 320, 336, 352, 368, 384, 400, 416, 432, 448, 464, 480, 496, 512], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 512, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=2769861) INFO 09-26 00:37:47 [parallel_state.py:1638] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///tmp/vllm_dist_2813ec6c67d34a06b4eac46972f4df49 backend=nccl
+(EngineCore pid=2769861) INFO 09-26 00:37:47 [parallel_state.py:1982] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore pid=2769861) INFO 09-26 00:37:47 [gpu_worker.py:396] Using V2 Model Runner
+(EngineCore pid=2769861) INFO 09-26 00:37:48 [model_runner.py:358] Loading model from scratch...
+(EngineCore pid=2769861) INFO 09-26 00:37:50 [cuda.py:486] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+(EngineCore pid=2769861) INFO 09-26 00:37:50 [flash_attn.py:866] Using FlashAttention version 3
+(EngineCore pid=2769861) INFO 09-26 00:37:50 [weight_utils.py:858] Filesystem type for checkpoints: LUSTRE. Checkpoint size: 4.69 GiB. Available RAM: 1961.22 GiB.
+(EngineCore pid=2769861) INFO 09-26 00:37:50 [weight_utils.py:820] Prefetching checkpoint files into page cache started (in background, num_threads=8, block_size=16777216 bytes)
+(EngineCore pid=2769861) INFO 09-26 00:37:52 [weight_utils.py:792] Prefetching checkpoint files: 10% (1/1)
+(EngineCore pid=2769861) INFO 09-26 00:37:52 [weight_utils.py:815] Prefetching checkpoint files into page cache finished in 1.41s
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [default_loader.py:430] Loading weights took 2.34 seconds
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [eagle3_utils.py:28] Using Eagle3 auxiliary layers from config: (2, 11, 21, 31, 40)
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [kernel.py:308] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [cuda.py:486] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [weight_utils.py:858] Filesystem type for checkpoints: LUSTRE. Checkpoint size: 0.60 GiB. Available RAM: 1961.26 GiB.
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [weight_utils.py:820] Prefetching checkpoint files into page cache started (in background, num_threads=8, block_size=16777216 bytes)
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [weight_utils.py:792] Prefetching checkpoint files: 10% (1/1)
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [weight_utils.py:815] Prefetching checkpoint files into page cache finished in 0.28s
+(EngineCore pid=2769861) INFO 09-26 00:37:53 [default_loader.py:430] Loading weights took 0.31 seconds
+(EngineCore pid=2769861) INFO 09-26 00:37:54 [model_runner.py:380] Model loading took 5.36 GiB memory and 5.517529 seconds
+(EngineCore pid=2769861) INFO 09-26 00:37:54 [topk_topp_sampler.py:62] Using FlashInfer for top-p & top-k sampling.
+(EngineCore pid=2769861) INFO 09-26 00:37:56 [caching.py:343] reconstructed serializable fn from standalone compile artifacts. num_artifacts=4 num_submods=43
+(EngineCore pid=2769861) INFO 09-26 00:37:57 [decorators.py:311] Directly load AOT compilation from path /home/hice1/aghosh367/.cache/vllm/torch_compile_cache/torch_aot_compile/6ec6bec01cf475655dd5db100f28322850b471d61ee4ad1b6ae4939aa1964f7f/rank_0_0/model
+(EngineCore pid=2769861) INFO 09-26 00:37:57 [monitor.py:53] torch.compile took 0.49 s in total
+(EngineCore pid=2769861) INFO 09-26 00:37:57 [monitor.py:81] Initial profiling/warmup run took 0.12 s
+(EngineCore pid=2769861) INFO 09-26 00:37:57 [caching.py:343] reconstructed serializable fn from standalone compile artifacts. num_artifacts=3 num_submods=6
+(EngineCore pid=2769861) INFO 09-26 00:37:57 [decorators.py:311] Directly load AOT compilation from path /home/hice1/aghosh367/.cache/vllm/torch_compile_cache/torch_aot_compile/1d3ea9aa0b094e1f9545f4c3a31e0db465eb22dcce21c7e1974b917a0b761a61/rank_0_0/model
+(EngineCore pid=2769861) INFO 09-26 00:37:57 [monitor.py:53] torch.compile took 0.16 s in total
+(EngineCore pid=2769861) INFO 09-26 00:37:57 [monitor.py:81] Initial profiling/warmup run took 0.01 s
+(EngineCore pid=2769861) INFO 09-26 00:37:58 [gpu_worker.py:578] Available KV cache memory: 60.28 GiB
+(EngineCore pid=2769861) INFO 09-26 00:37:58 [kv_cache_utils.py:1869] GPU KV cache size: 1,344,736 tokens, Maximum concurrency for 4,096 tokens per request: 328.30x
+(EngineCore pid=2769861) INFO 09-26 00:37:58 [kernel.py:308] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=2769861) INFO 09-26 00:38:04 [speculator.py:140] Capturing model for DSpark speculator...
+(EngineCore pid=2769861) INFO 09-26 00:38:11 [model_runner.py:906] Graph capturing finished in 12 secs, took 10.35 GiB
+(EngineCore pid=2769861) INFO 09-26 00:38:11 [gpu_worker.py:804] Free memory on device (78.67/79.18 GiB) on startup. Desired GPU memory utilization is (0.85, 67.3 GiB). Actual usage is 5.95 GiB for consumed memory (weights + non-torch), 1.08 GiB for peak activation, and 10.35 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=53449814938` (49.78 GiB) to fit into requested memory, or `--kv-cache-memory=65650350592` (61.14 GiB) to fully utilize gpu memory. Current kv cache memory in use is 60.28 GiB.
+(EngineCore pid=2769861) INFO 09-26 00:38:14 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+(EngineCore pid=2769861) INFO 09-26 00:38:14 [torch_utils.py:262] Reducing Torch threads from 4 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+(EngineCore pid=2769861) INFO 09-26 00:38:14 [core.py:347] init engine (profile, create kv cache, warmup model) took 20.87 s (compilation: 0.65 s)
+(EngineCore pid=2769861) WARNING 09-26 00:38:14 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+(EngineCore pid=2769861) INFO 09-26 00:38:14 [kernel.py:308] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+WARNING 09-26 00:38:14 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+INFO 09-26 00:38:15 [hf.py:551] Detected the chat template content format to be 'string'. You can set `--chat-template-content-format` to override this.
+(EngineCore pid=2769861) WARNING 09-26 00:38:15 [jit_monitor.py:141] Triton kernel JIT compilation during inference: _compute_local_logits_stats_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=2769861) WARNING 09-26 00:38:15 [jit_monitor.py:141] Triton kernel JIT compilation during inference: _rejection_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=2769861) WARNING 09-26 00:38:15 [jit_monitor.py:141] Triton kernel JIT compilation during inference: _resample_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+correction installed; k=0.0137 us/KV-token, configured profile context=8192, max model length=4096
+
+exact prompt-token sweep
+  input lengths: [64]
+  prompts/cell: 256
+  output tokens/request: 128 (EOS ignored)
+
+warmup: 2 paired round(s) per input length
+corrected arm adds 0.000 ms to every step cost
+
+measuring 20 paired rounds per input length
+
+ round   input       mode   seconds  out toks     tok/s
+----------------------------------------------------------
+     1      64      stock     0.646     32768   50755.4
+     1      64  corrected     0.640     32768   51208.2
+     2      64  corrected     0.658     32768   49765.8
+     2      64      stock     0.643     32768   50963.5
+     3      64      stock     0.649     32768   50480.3
+     3      64  corrected     0.647     32768   50673.5
+     4      64  corrected     0.644     32768   50918.8
+     4      64      stock     0.653     32768   50171.5
+     5      64      stock     0.643     32768   50967.7
+     5      64  corrected     0.648     32768   50531.9
+     6      64  corrected     0.646     32768   50744.7
+INFO 09-26 00:38:25 [loggers.py:310] Engine 000: Avg prompt throughput: 22353.4 tokens/s, Avg generation throughput: 44695.3 tokens/s, Running: 98 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.6%, Prefix cache hit rate: 0.0%
+INFO 09-26 00:38:25 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 6.50, Accepted throughput: 38398.85 tokens/s, Drafted throughput: 48869.70 tokens/s, Accepted: 422287 tokens, Drafted: 537439 tokens, Per-position acceptance rate: 1.000, 0.977, 0.967, 0.947, 0.835, 0.535, 0.238, Avg Draft acceptance rate: 78.6%
+     6      64      stock     0.646     32768   50704.1
+     7      64      stock     0.646     32768   50742.9
+     7      64  corrected     0.645     32768   50789.4
+     8      64  corrected     0.656     32768   49958.9
+     8      64      stock     0.652     32768   50260.3
+     9      64      stock     0.645     32768   50826.8
+     9      64  corrected     0.650     32768   50374.0
+    10      64  corrected     0.656     32768   49972.2
+    10      64      stock     0.652     32768   50292.7
+    11      64      stock     0.651     32768   50340.3
+    11      64  corrected     0.653     32768   50172.5
+    12      64  corrected     0.656     32768   49961.7
+    12      64      stock     0.642     32768   51033.9
+    13      64      stock     0.663     32768   49393.3
+    13      64  corrected     0.643     32768   50942.1
+INFO 09-26 00:38:35 [loggers.py:310] Engine 000: Avg prompt throughput: 26156.5 tokens/s, Avg generation throughput: 49281.9 tokens/s, Running: 256 reqs, Waiting: 0 reqs, GPU KV cache usage: 1.8%, Prefix cache hit rate: 0.0%
+INFO 09-26 00:38:35 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 6.48, Accepted throughput: 42299.09 tokens/s, Drafted throughput: 54056.81 tokens/s, Accepted: 423807 tokens, Drafted: 541611 tokens, Per-position acceptance rate: 1.000, 0.977, 0.966, 0.945, 0.832, 0.528, 0.230, Avg Draft acceptance rate: 78.2%
+    14      64  corrected     0.647     32768   50672.7
+    14      64      stock     0.648     32768   50549.3
+    15      64      stock     0.650     32768   50411.5
+    15      64  corrected     0.651     32768   50362.8
+    16      64  corrected     0.649     32768   50504.9
+    16      64      stock     0.648     32768   50606.4
+    17      64      stock     0.650     32768   50401.8
+    17      64  corrected     0.646     32768   50735.5
+    18      64  corrected     0.654     32768   50098.2
+    18      64      stock     0.648     32768   50529.1
+    19      64      stock     0.654     32768   50088.9
+    19      64  corrected     0.651     32768   50369.0
+    20      64  corrected     0.649     32768   50478.3
+    20      64      stock     0.655     32768   49996.7
+
+per-context paired results
+  input  stock tok/s   corr tok/s  mean delta        SE  corr wins
+-------------------------------------------------------------------
+     64      50504.7      50491.6     -0.02%    0.27%   10/20  
+
+wrote results/ceiling_seqs256.json
+INFO 09-26 00:38:45 [utils.py:615] [shutdown] Process manager: send sigterm to process EngineCore
+(EngineCore pid=2769861) INFO 09-26 00:38:45 [core.py:1329] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=2769861) INFO 09-26 00:38:45 [core.py:1465] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=2769861) INFO 09-26 00:38:45 [core.py:1496] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=2769861) INFO 09-26 00:38:45 [core.py:1342] [shutdown] EngineCore: exiting busy loop
+=== done (00:38:47), exit status 0 ===
+---------------------------------------
+Begin Slurm Epilog: Sep-26-2026 00:38:47
+Job ID:        5947253
+User ID:       aghosh367
+Account:       coc
+Job name:      ceiling-seqs
+Resources:     cpu=4,gres/gpu:h100=1,mem=32G,node=1
+Rsrc Used:     cput=00:09:44,vmem=0,walltime=00:02:26,mem=6168044K,energy_used=0
+Partition:     ice-gpu
+QOS:           coc-ice
+Nodes:         atl1-1-03-013-13-0
+---------------------------------------
