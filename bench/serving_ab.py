@@ -903,6 +903,12 @@ def main() -> int:
               "same as earlier runs."),
     )
     p.add_argument(
+        "--collect-acceptance", action="store_true",
+        help="enable vLLM stat collection so per-round acceptance counts are "
+             "recorded. Costs a little bookkeeping per step, applied equally "
+             "to both arms.",
+    )
+    p.add_argument(
         "--arm-b", choices=("corrected", "ceiling"), default="corrected",
         help="what the second arm does. 'corrected' applies the k cost fix; "
              "'ceiling' ignores the cost model and always takes every draft "
@@ -1003,6 +1009,11 @@ def main() -> int:
         max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        # vLLM's LLM class disables stat collection by default, which also
+        # suppresses the spec-decode counters the per-round acceptance numbers
+        # come from. Off by default here so a throughput A/B pays nothing for
+        # bookkeeping it is not using.
+        disable_log_stats=not args.collect_acceptance,
         # Prefix caching would let later rounds reuse earlier rounds' KV and
         # make whichever mode ran second look faster.
         enable_prefix_caching=False,
