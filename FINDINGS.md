@@ -31,6 +31,8 @@ head_dim 128 → 112 KB KV per token), RTX 4060 Laptop (sm_89, ~7950 MB usable,
 | **E9** | First serving A/B and saturation sweep | spec 3/7, concurrency 16/64 | saturation is real; A/B result is **superseded** |
 | **E10** | Calibrated in-engine MiniCPM spec-7 A/B | 20 paired rounds, exact profile reconstruction | correction changes decisions but throughput is **0.365% lower** |
 | **E11** | Does the penalty vary with context? | ctx 64-3,000 (5 jobs) and 9,000-13,000 | a **cliff**: **-3.6%** at ctx=64, null everywhere else |
+| **E12** | Does a missing fixed per-step overhead explain it? | measured 0.279 ms added to every cost | no: moves the threshold **0.5pp** of the 7.5pp it fought |
+| **E13** | Does the cost model help *at all*? | stock vs always-ceiling, `max_num_seqs` 16-512 | ignoring it is **+2.8%** faster at 128 concurrent |
 
 Sections below are in experiment order. Numbering is historical, not
 chronological: E5 was run before E3.
@@ -895,5 +897,176 @@ ctx=64 is the only regime with headroom to show it:
 contain a literal `${CTX}`: SLURM parses those lines as comments before any
 shell runs, so the variable does not expand. Jobs did not collide only because
 `%j` differs. Log files from this run are named `ctx-one-<jobid>-ctx${CTX}`.
+
+---
+
+## E12 — the missing-overhead hypothesis, falsified, and the tie-break mechanism
+
+`bench/serving_ab.py --overhead-ms auto` → `results/ab_spec7_ctx64_ohauto.json`
+Hypothesis and implementation by Aditya.
+
+**The hypothesis.** The stock cost tables price a step by the model forward
+pass and omit fixed per-step work: scheduling, input preparation, sampling, CPU
+gaps between kernels. Because the rule is `argmax(accepted / cost)`, scaling
+every cost leaves the choice untouched while *adding* a constant does not — a
+larger fixed cost per step makes it worth keeping more drafts, since each step
+has to pay for itself. That pushes the budget toward the ceiling rather than
+away from it, the opposite of what the k correction does. It was the first
+hypothesis in this project that could have come out positive.
+
+**Measured, not invented.** The overhead was estimated in-engine as the median
+gap between predicted and actual step time over 44 stock warmup decode steps:
+**0.279 ms**. (E7's mistake was using a marginal cost I made up; this does not
+repeat it.)
+
+**Result: no effect on the decision.** The corrected arm's budget split was
+unchanged — 160/240 with the overhead versus 158/242 without — and ceiling
+selection moved from 45.9% to 46.2%.
+
+The apparent improvement in the headline number is an artifact. The delta went
+from -3.604% to -2.062%, but that is the *stock* arm drifting between jobs
+(448/336 split 200/200 → 220/180, median throughput 39,050 → 37,888 tok/s), not
+the correction improving. Comparing arms across separate jobs is invalid here;
+only the within-job paired delta is.
+
+**Why it could not have worked, quantitatively.** This is also the cleanest
+statement of the whole E10/E11 mechanism. At ctx=64 with 64 requests the stock
+policy chooses between exactly two budgets, both of which are *captured* CUDA
+graph shapes (not padded — 400 and 512 are both on the capture list):
+
+    448 drafts -> 512 target tokens -> 8.740 ms   (the ceiling, 64 x 7)
+    336 drafts -> 400 target tokens -> 7.995 ms
+
+Picking the ceiling requires `accepted(448)/accepted(336) > 8.740/7.995`, i.e.
+**9.3% more expected accepted tokens**. Per-step confidence variation sits right
+on that line, so across 400 steps it splits 200/200 — a coin flip, not a policy.
+
+    pricing                    threshold   ceiling chosen
+    stock                          9.3%        200/400
+    stock + k correction          16.8%        158/400
+    stock + k + 0.279 ms          16.3%        160/400
+
+The k correction subtracts ~3.616 ms at this shape and raises the bar to 16.8%.
+The overhead adds 0.279 ms back, moving the bar by half a percentage point —
+7.7% of what it was fighting. The hypothesis was sound; the intervention was an
+order of magnitude too small to test it.
+
+**The reframing worth keeping.** The accurate cost model is not making a worse
+estimate. It is moving a threshold across a distribution that happened to be
+sitting on it.
+
+---
+
+## E13 — is adaptive verification earning anything? A concurrency sweep
+
+`bench/serving_ab.py --arm-b ceiling` → `results/ceiling_ab_ctx{64,1024}.json`,
+`results/ceiling_seqs{16,128,256,512}.json`
+
+**The question.** E10-E12 all ask whether a *better cost model* helps. This asks
+something more basic: does the cost model help at all? Arm B ignores it entirely
+and always admits every draft token on offer.
+
+**Implementation, without touching vLLM's decision code.** `estimated_accepted`
+is a cumulative sum of survival probabilities, so it is non-decreasing in the
+budget, and the draft-cost term is identical across candidates. Flattening the
+verify table (`np.ones_like`) makes the denominator constant, so
+`argmax(accepted / cost)` reduces to `argmax(accepted)` — the largest budget.
+Verified in the traces: `at_ceiling` came back exactly 100.0%.
+
+(Strictly this is "admit every slot that still adds expected value", since
+`np.argmax` returns the first maximal index; with exactly-zero survival
+probabilities it would stop short at identical expected accepted tokens.
+Survival probabilities are products of ~0.6 confidences, so this never fired.)
+
+**Result: the policy is miscalibrated in a specific concurrency band.** ctx=64
+throughout, 20 paired rounds, output tokens equal every round.
+
+    seqs   median d      t     rounds won   stock at ceiling   ceiling binding constraint
+      16    -0.087%   -2.75      4/20            95.5%         block size (16 x 7 = 112)
+      64    +1.082%   +6.29     20/20            56.7%         block size (448)
+     128    +2.781%   +7.31     19/20            18.0%         block size (896)
+     256    -0.008%   -0.08     10/20             7.9%         block size (1792)
+     512         --      --         --            88.1%         LOGIT CAP - not a valid test
+
+At 64 and 128 concurrent requests, **ignoring the cost model is faster than
+consulting it** — by 1.1% and 2.8% median, winning 20/20 and 19/20 paired
+rounds. At 16 the policy is marginally right (it deviates from the ceiling in
+5% of steps and those deviations are very slightly correct). At 256 it is
+break-even.
+
+A ctx=1024 control at 64 sequences came out at -0.119% median (t = -1.61,
+8/20), with byte-identical budget distributions in both arms — as it should,
+since stock was already at its ceiling 95.2% of the time there.
+
+**Why the middle band.** Two quantities move with concurrency and they do not
+move together. The policy trims *more* as load rises (ceiling selection
+95.5% → 56.7% → 18.0% → 7.9%; at 256 its chosen budget is scattered across
+~110 distinct values from 1,338 to 1,792). But trimming only becomes *worth it*
+at the top, where a step is wide enough that compute stops being free. Between
+those, the policy trims aggressively and wrongly.
+
+**Acceptance data confirms the mechanism directly.** Mean accepted tokens per
+draft, and the share of blocks accepting all 7:
+
+    seqs      stock          always-ceiling
+      16   5.596  (28% all-7)   5.596  (28%)
+     128   5.493  (22% all-7)   5.625  (29%)
+     256   5.351  (17% all-7)   5.637  (30%)
+
+The ceiling arm's acceptance is flat because it always offers all 7 slots;
+stock's *declines* with load because it is cutting the last slot off more and
+more requests. At 256 the ceiling arm accepts **5.3% more tokens per draft and
+is not one bit faster** — the extra verification compute exactly eats the extra
+progress. That is the break-even point, measured two independent ways.
+
+**The acceptance distribution itself** (256 seqs, stock, % of drafts by number
+accepted):
+
+    0:0%   1:3%   2:1%   3:3%   4:12%   5:33%   6:31%   7:17%
+
+Mean 5.35 of 7; ~81% of blocks accept five or more; almost nothing accepts
+zero. And it does **not** drift over generation — round 1 to round 20 moves
+5.474 → 5.501 at 128 seqs and 5.353 → 5.347 at 256. The expectation that
+acceptance would decay as generation ran past the prompt is wrong over 128
+output tokens.
+
+**Above ~257 requests the cost model is no longer in charge.** The 512 run is
+not a valid test of the policy and is recorded as such. The ceiling is
+
+    max_draft_budget = min(available,
+                           max(0, _max_total_logits - num_reqs * num_bonus_tokens))
+
+with `_max_total_logits = get_max_chunk_logits(vocab_size)`
+(`rejection_sampler.py:35`) — a fixed byte budget for the rejection sampler's
+logit buffer divided by vocab size, **2056** on this model. So the cap binds
+whenever `7n > 2056 - n`, i.e. **above 257 concurrent requests**. At 256 there
+were 8 tokens of slack; at 512 the cap cuts the budget to 1,544 of a possible
+3,584, and both arms select exactly 1,544 on every full-width step.
+
+This is not merely a measurement nuisance. The cap trims from the *end* of the
+survival-ranked slot list — precisely the low-confidence tail slots the policy
+would otherwise have debated. Ceiling selection jumps back to 88.1% because the
+cap has already done the trimming. In the high-concurrency regime adaptive
+verification is designed for, an unrelated architectural limit sets the budget.
+
+**Where this leaves the project.** The headline is no longer "the cost model is
+inaccurate and fixing it does not help". It is:
+
+> vLLM's adaptive verification budget policy is miscalibrated in a specific
+> concurrency band. At 64-128 concurrent requests it trims draft tokens that
+> were worth keeping, costing 1-3% throughput against a policy that ignores the
+> cost model entirely. Below that band it barely deviates from the ceiling;
+> above it, the trimming becomes justified, and above 257 requests a fixed
+> logit-buffer cap takes the decision away from it.
+
+**Method notes and limits.**
+- Absolute throughput is not comparable across these jobs: the 64-sequence run
+  predates `--collect-acceptance`, so it carries no stat-collection overhead
+  while the others do. Every delta is within-job and paired, so the table is
+  unaffected.
+- 128 sequences shows lower absolute throughput than 64 (36.6k vs 38.0k
+  tok/s), which the stat overhead does not fully explain. Not chased.
+- One model, one GPU, one drafter, homogeneous exact-length prompts, 128 output
+  tokens. Heterogeneous batches within a step are untested.
 
 ---
