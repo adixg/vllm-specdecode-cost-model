@@ -14,7 +14,7 @@ What it reports:
   4. predicted vs actual step latency on real (not dummy) steps
 
 Run:
-    source env.sh
+    conda activate ~/scratch/conda-envs/cs6222
     export VLLM_USE_V2_MODEL_RUNNER=1
     python bench/dspark_baseline.py
 """

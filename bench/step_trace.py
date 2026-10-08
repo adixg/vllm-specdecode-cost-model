@@ -15,7 +15,7 @@ oracle bound): the survival-score curve, the candidate cost curve, and the
 budget actually chosen.
 
 Run:
-    source env.sh                      # laptop; on a cluster just activate the env
+    conda activate ~/scratch/conda-envs/cs6222
     export VLLM_USE_V2_MODEL_RUNNER=1
     python bench/step_trace.py --model openbmb/MiniCPM5-2B \
                                --draft openbmb/MiniCPM5-2B-DSpark

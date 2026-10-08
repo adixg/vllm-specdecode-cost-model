@@ -25,7 +25,7 @@ A one-dimensional cost model predicts these are identical - and so does the
 two-term model above.  Allocation-dependent cost predicts they differ.
 
 Run:
-    source env.sh
+    conda activate ~/scratch/conda-envs/cs6222
     export VLLM_USE_V2_MODEL_RUNNER=1
     python bench/marginal_cost_probe.py --model Qwen/Qwen3-1.7B
 """
