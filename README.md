@@ -53,10 +53,12 @@ corrected_cost[t] = stock_cost[t]
 |---|---|
 | Sequence length is a missing cost feature | At fixed target-token count, measured latency changes substantially with aggregate KV context. |
 | The error is predictable | On held-out contexts, a one-scalar additive model reduces RMSE from `5.779 ms` to `0.496 ms`—an **11.6× reduction**. |
-| The sign depends on context | Below the profile context, stock overpredicts; above it, stock underpredicts by as much as **203%** in the tested Qwen/H100 sweep. |
+| The sign depends on context | Below the profile context, stock overpredicts; above it, stock underpredicts by as much as **202%** in the tested Qwen/H100 sweep. |
 | `k` is model-specific | H100 fits give `0.0356 us/KV-token` for Qwen3-1.7B and `0.0137 us/KV-token` for MiniCPM5-2B. Transferring `k` across models is invalid. |
 | Accurate prediction changes real decisions | In the calibrated MiniCPM/spec-7 A/B, decode ceiling selection fell from `97.98%` to `89.17%`. |
 | Accurate prediction is not sufficient for speedup | The correction was **0.365% slower** on the tested workload because draft trimming produced 13 additional decode batches across 20 paired runs. |
+| The budget policy itself is miscalibrated | Against a policy that ignores the cost model and always admits every draft token, stock is **1.1% slower at 64** concurrent requests (20/20 paired rounds) and **2.8% slower at 128** (19/20). Marginally better at 16, break-even at 256. |
+| Above ~257 requests the cost model is not in charge | `max_draft_budget` is capped by `get_max_chunk_logits(vocab_size)` = 2056 on this model, so the cap binds whenever `7n > 2056 - n`. At 512 requests it sets the budget to 1,544 of a possible 3,584. |
 
 ## The context-dependent sign flip
 

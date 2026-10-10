@@ -27,7 +27,7 @@ head_dim 128 → 112 KB KV per token), RTX 4060 Laptop (sm_89, ~7950 MB usable,
 | **E6** | E1 and E5 on production hardware (H100, FA3) | same sweeps, real GPU, no KV aliasing | **7.8x** graphed, **~1%** eager |
 | **E4** | Which correction form predicts held-out contexts? | additive vs max-like, graphed and eager | additive wins for graphs; **11.6x** lower test RMSE |
 | **E7** | Does the error change the chosen draft budget? | simulated context offset with measured marginal cost | yes, but predicted loss is **<1%** |
-| **E8** | Does error change sign beyond the profile context? | contexts 1,024-32,000 on H100 | yes; scalar correction cuts median error **42x** |
+| **E8** | Does error change sign beyond the profile context? | contexts 1,024-32,000 on H100 | yes; unfitted scalar cuts median error **26x** |
 | **E9** | First serving A/B and saturation sweep | spec 3/7, concurrency 16/64 | saturation is real; A/B result is **superseded** |
 | **E10** | Calibrated in-engine MiniCPM spec-7 A/B | 20 paired rounds, exact profile reconstruction | correction changes decisions but throughput is **0.365% lower** |
 | **E11** | Does the penalty vary with context? | ctx 64-3,000 (5 jobs) and 9,000-13,000 | a **cliff**: **-3.6%** at ctx=64, null everywhere else |
@@ -36,6 +36,17 @@ head_dim 128 → 112 KB KV per token), RTX 4060 Laptop (sm_89, ~7950 MB usable,
 
 Sections below are in experiment order. Numbering is historical, not
 chronological: E5 was run before E3.
+
+**Two model lineages — do not mix their numbers.** E1, E2, E5, E6 and E8 measure
+the *cost surface* on `Qwen/Qwen3-1.7B` with no speculator, via `_dummy_run`.
+E3 and E9-E13 are real serving runs on `openbmb/MiniCPM5-2B` +
+`openbmb/MiniCPM5-2B-DSpark` at `num_speculative_tokens=7`. The KV-read
+constant `k` differs **2.7x** between them (0.0346 us/KV-token fitted on Qwen,
+0.0137 us/KV-token calibrated in-engine for MiniCPM), because `k` is KV bytes
+per token over bandwidth and is therefore model-specific. The independent
+bandwidth cross-check (agreement to 3%) exists for Qwen only; MiniCPM's `k` is
+measured in-engine with a 2.8% per-shape spread but has no physics derivation
+in these results.
 
 ---
 
@@ -551,6 +562,9 @@ between the three readings above. `bench/step_trace.py` logs what it needs.
 ## E8 — the sign-flip prediction, confirmed out-of-sample
 
 `pace/run_all.sbatch` (experiment B) → `results/h100_ctx_straddle.json`
+**Model: `Qwen/Qwen3-1.7B`, `max_num_seqs=16`, no speculator** — this is a
+cost-surface measurement, not a serving run. See the lineage note under the
+Summary.
 
 **The prediction.** vLLM profiles its cost table assuming 8192 tokens of
 context per request. Every context measured up to this point was at or below
@@ -561,37 +575,49 @@ makes the scheduler commit to work it cannot afford.
 **Confirmed exactly.** Contexts 1024 to 32,000, on an H100 with FA3:
 
      n    ctx   pred_ms  actual_ms   rel_err
-     1   1024     2.272      2.002    -11.9%
-     1  32000     2.272      3.158    +39.0%
-    16   1024     6.806      2.644    -61.2%
-    16   8192     6.806      6.806     +0.0%   <-- the profiling point
-    16  16384     6.806     11.577    +70.1%
-    16  32000     6.806     20.628   **+203.1%**
+     1   1024     2.292      2.021    -11.8%
+     1  32000     2.292      3.197    +39.5%
+    16   1024     6.966      2.710    -61.1%
+    16   8192     6.966      6.966     +0.0%   <-- the profiling point
+    16  16384     6.966     11.864    +70.3%
+    16  32000     6.966     21.064   **+202.4%**
 
 The sign changes at exactly 8192 and the magnitude scales with
 `num_reqs * |ctx - 8192|`, as the model requires. Under-prediction reaches
-**+203%**: vLLM believes a 20.6 ms step will take 6.8 ms.
+**+202%**: vLLM believes a 21.1 ms step will take 7.0 ms.
 
-**The model predicts the magnitudes, not just the direction.** Applying the
-correction with `k = 0.0356 us/KV-token` — **fitted on entirely different data**
-(`h100_e1`/`h100_e5`, a different `max_num_seqs`, contexts capped at 4096) and
-used here unchanged:
+**The model predicts the magnitudes, not just the direction.** Applying
 
     corrected = table[n] + k * num_reqs * (ctx - 8192)
 
-                    median |error|    max |error|
-    two-term model       0.8%            3.0%
-    stock vLLM          33.9%          203.1%
+with two constants, neither fitted on these rows:
 
-**A 42x reduction in median error on out-of-sample data**, over a context range
-four times beyond where the constant was fitted. This is the project's
-strongest evidence: a prediction made in advance, tested on new measurements,
-confirmed in both sign and magnitude.
+    k source                              median |err|   max |err|   vs stock
+    0.0356 us  bandwidth derivation (E6)       1.32%        6.4%       25.7x
+    0.0346 us  additive fit (E4, held out)     1.99%       10.6%       17.0x
+    --         stock vLLM                     33.86%      202.4%          --
+
+The bandwidth constant is the stronger result: it comes from KV bytes per token
+divided by measured memory bandwidth and is not fitted to timing data at all,
+yet it cuts median error **26x** over a context range four times beyond
+anything used to derive it. E4's fitted constant, held out from contexts 1024
+and 4096, gives 17x. Either way a single scalar carries almost all of it.
+
+**Correction (October 2026).** This entry previously reported a **42x**
+reduction, with median error 0.8% and max 3.0%. Those numbers came from the
+first version of `h100_ctx_straddle.json`, committed in `06ed46f` on
+September 16. The file was overwritten by a rerun the next day (`5bf2180`,
+generated 2026-09-17T05:31Z) and this section was never updated, so the text
+described data that no longer existed in the repository. The table and ratios
+above are recomputed from the committed file. The phenomenon is unchanged — the
+sign flip, the scaling law, and the order of magnitude all hold — but 42x was
+not reproducible and should not be quoted.
 
 **What this does NOT show.** Still synthetic `_dummy_run` batches with a single
 context per batch, one model, one GPU, and all cells inside the CUDA-graph
-capture range. It measures prediction accuracy, not serving benefit; whether
-better predictions produce better scheduling remains the open question.
+capture range. It measures prediction accuracy, not serving benefit. E10-E13
+answer the serving question, and the answer is that better prediction does not
+produce better scheduling here.
 
 ---
 
@@ -781,11 +807,14 @@ current step only**. It does not price the future cost of needing another
 decode iteration. So a more accurate cost feeds a myopic objective and yields a
 worse schedule.
 
-**The project's central result, then:** vLLM's verification cost model is wrong
-by up to 203%, one scalar makes it 42x more accurate out-of-sample, and
+**The central result as of E10:** vLLM's verification cost model is wrong by up
+to 202%, one unfitted scalar makes it 26x more accurate out-of-sample, and
 deploying that accuracy makes serving **0.37% slower** — because the decision it
 feeds is saturated at its ceiling 98% of the time, and the existing error
 happens to bias toward that ceiling, which is nearly the right answer.
+(E13 later supersedes this as the project's headline: the policy itself is
+miscalibrated at 64-128 concurrent requests, costing 1-3% against ignoring the
+cost model entirely.)
 
 This is not "accurate costs are bad". It is that **prediction quality and
 decision quality are separate problems**, and improving the first without
