@@ -162,6 +162,7 @@ global warmup and interleaved timing, the difference fell to 0.21%.
 | [`pace/`](pace/) | Reproducible Slurm launchers for H100 experiments. |
 | [`results/`](results/) | Raw JSON measurements and generated figures. |
 | [`FINDINGS.md`](FINDINGS.md) | Full experiment log, corrections, negative results, and limitations. |
+| [`FUTURE_PLAN.md`](FUTURE_PLAN.md) | Next experiments: quantized KV cache and `k`, the E13 concurrency band, cross-GPU calibration (H200, L40S, MI300X). |
 | [`SETUP.md`](SETUP.md) | Environment and vLLM setup notes. |
 
 ## Reproducing the main experiment
