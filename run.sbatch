@@ -34,9 +34,9 @@ mkdir -p results
 
 srun python -u experiment.py \
     --model Qwen/Qwen3-1.7B \
-    --max-num-seqs 8 \
+    --max-num-seqs 32 \
     --max-model-len 16384 \
-    --num-tokens 64 128 256 \
+    --num-tokens 8 16 32 \
     --baseline-context 8192 \
     --train-contexts 512 4096 \
     --test-contexts 1024 2048 12288 \

@@ -20,7 +20,6 @@ import math
 import os
 import random
 import statistics
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +34,17 @@ def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int) 
     if not hasattr(runner, "step_timing") or not hasattr(runner, "_dummy_run"):
         raise RuntimeError("Requires vLLM V2 runner with step_timing and _dummy_run")
 
+    # Every shape must replay a captured CUDA graph. An uncaptured size runs
+    # eager, where CPU launch overhead hides the KV-read cost entirely.
+    cg = getattr(runner, "cudagraph_manager", None)
+    captured = sorted(cg.captured_token_counts()) if cg is not None else []
+    missing = sorted({c["num_tokens"] for c in cells} - set(captured))
+    if missing:
+        raise ValueError(
+            f"num_tokens {missing} have no captured CUDA graph "
+            f"(captured: {captured}); they would run eager"
+        )
+
     # For standard non-hybrid attention, dummy KV blocks are recycled when
     # the requested synthetic context exceeds available block capacity.
     # Fail instead of silently treating aliased reads as representative.
@@ -46,8 +56,11 @@ def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int) 
                    if isinstance(nblocks, int) and isinstance(block_size, int)
                    else None)
     if kv_capacity is not None:
-        largest = max(min(c["num_tokens"], runner.max_num_reqs) *
-                      (c["context_len"] + c["num_tokens"]) for c in cells)
+        largest = 0
+        for c in cells:
+            reqs = min(c["num_tokens"], runner.max_num_reqs)
+            per_req = -(-c["num_tokens"] // reqs)
+            largest = max(largest, reqs * (c["context_len"] + per_req))
         if largest > kv_capacity:
             raise ValueError(
                 f"Dummy KV context could wrap: nominal={largest} tokens, "
@@ -107,10 +120,6 @@ def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int) 
             "stddev_ms": statistics.stdev(values) if len(values) > 1 else 0.0,
         })
 
-    # This may overestimate *physically distinct* cached tokens if vLLM's
-    # set_dummy_context wraps dummy block indices beyond available KV blocks.
-    cg = getattr(runner, "cudagraph_manager", None)
-    captured = (list(cg.captured_token_counts()) if cg is not None else [])
     return {
         "rows": out,
         "captured_token_counts": captured,
@@ -139,12 +148,12 @@ def rmse(values: list[float]) -> float:
 
 
 def self_test() -> None:
-    baseline = {64: 2.0, 128: 3.0}
+    baseline = {8: 2.0, 16: 3.0}
     base_ctx = 8192
     known_k = 0.000012
     rows = [
-        {"num_tokens": n, "num_reqs": 8, "context_len": ctx,
-         "median_ms": baseline[n] + known_k * 8 * (ctx - base_ctx)}
+        {"num_tokens": n, "num_reqs": n, "context_len": ctx,
+         "median_ms": baseline[n] + known_k * n * (ctx - base_ctx)}
         for n in baseline for ctx in (512, 4096)
     ]
     estimated = fit_k(rows, baseline, base_ctx)
@@ -157,8 +166,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--model", default="Qwen/Qwen3-1.7B")
-    p.add_argument("--num-tokens", nargs="+", type=int, default=[64, 128, 256])
-    p.add_argument("--max-num-seqs", type=int, default=8)
+    p.add_argument("--num-tokens", nargs="+", type=int, default=[8, 16, 32])
+    p.add_argument("--max-num-seqs", type=int, default=32)
     p.add_argument("--max-model-len", type=int, default=16384)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.75)
     p.add_argument("--baseline-context", type=int, default=8192)
@@ -173,10 +182,11 @@ def main() -> None:
     if args.self_test:
         self_test()
         return
-    if args.max_num_seqs < 1 or any(n < args.max_num_seqs for n in args.num_tokens):
-        p.error("Require 1 <= max-num-seqs <= every num-tokens value, to pin num_reqs")
-    if min(args.num_tokens) < 1 or args.warmup < 1 or args.repeats < 3:
-        p.error("Need positive token counts, >=1 global warmup, and >=3 repeats")
+    if min(args.num_tokens) < 1 or max(args.num_tokens) > args.max_num_seqs:
+        p.error("Require 1 <= every num-tokens value <= max-num-seqs, "
+                "so each request gets exactly one new token")
+    if args.warmup < 1 or args.repeats < 3:
+        p.error("Need >=1 global warmup and >=3 repeats")
     if len(set(args.num_tokens)) != len(args.num_tokens):
         p.error("Duplicate --num-tokens values")
     ctxs = [args.baseline_context, *args.train_contexts, *args.test_contexts]
@@ -214,15 +224,10 @@ def main() -> None:
         enforce_eager=False,
         tensor_parallel_size=1,
     )
-    try:
-        responses = llm.collective_rpc(
-            probe_worker,
-            args=(cells, args.warmup, args.repeats, args.seed),
-        )
-    finally:
-        # LLM has no uniformly supported close() on all vLLM versions.
-        # The engine stops when the process exits.
-        pass
+    responses = llm.collective_rpc(
+        probe_worker,
+        args=(cells, args.warmup, args.repeats, args.seed),
+    )
     if len(responses) != 1:
         raise RuntimeError(f"Expected one GPU worker, got {len(responses)}")
     measured = responses[0]
@@ -231,8 +236,6 @@ def main() -> None:
         r["num_tokens"]: r["median_ms"]
         for r in rows if r["split"] == "baseline"
     }
-    if len(baseline) != len(args.num_tokens):
-        raise RuntimeError("Missing baseline measurements")
     k = fit_k([r for r in rows if r["split"] == "train"],
               baseline, args.baseline_context)
 
@@ -274,6 +277,8 @@ def main() -> None:
             "No exploration, online estimator, outlier policy, or oracle replay.",
             "Dummy KV indices may wrap if nominal KV tokens exceed cache capacity.",
             "Timing is vLLM forward_ms (CUDA events), not request latency.",
+            "One new token per request (decode-shaped), not multi-token "
+            "verification steps.",
         ],
     }
     out = Path(args.out)
@@ -303,9 +308,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-        raise
+    main()
 
