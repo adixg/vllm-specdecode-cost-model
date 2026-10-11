@@ -34,15 +34,25 @@ def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int) 
     if not hasattr(runner, "step_timing") or not hasattr(runner, "_dummy_run"):
         raise RuntimeError("Requires vLLM V2 runner with step_timing and _dummy_run")
 
-    # Every shape must replay a captured CUDA graph. An uncaptured size runs
-    # eager, where CPU launch overhead hides the KV-read cost entirely.
+    # Every shape must replay a FULL CUDA graph at its exact size. Eager or
+    # PIECEWISE runs attention outside the graph, where CPU launch overhead
+    # hides the KV-read cost. Ask the dispatcher with the same arguments
+    # execute_model uses for a dummy batch of n requests x 1 token.
+    from vllm.config.compilation import CUDAGraphMode
+
     cg = getattr(runner, "cudagraph_manager", None)
     captured = sorted(cg.captured_token_counts()) if cg is not None else []
-    missing = sorted({c["num_tokens"] for c in cells} - set(captured))
-    if missing:
+    not_full = {}
+    for n in sorted({c["num_tokens"] for c in cells}):
+        desc = (cg.dispatch(n, n, 1, num_active_loras=0, max_query_len=1)
+                if cg is not None else None)
+        if desc is None or desc.cg_mode != CUDAGraphMode.FULL or desc.num_tokens != n:
+            not_full[n] = (f"{desc.cg_mode.name} padded to {desc.num_tokens}"
+                           if desc is not None else "no graph manager")
+    if not_full:
         raise ValueError(
-            f"num_tokens {missing} have no captured CUDA graph "
-            f"(captured: {captured}); they would run eager"
+            f"Shapes not replaying an exact FULL CUDA graph: {not_full} "
+            f"(captured sizes: {captured})"
         )
 
     # For standard non-hybrid attention, dummy KV blocks are recycled when
