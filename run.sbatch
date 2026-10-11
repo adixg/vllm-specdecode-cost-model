@@ -33,7 +33,8 @@ nvidia-smi
 mkdir -p results
 
 srun python -u experiment.py \
-    --model Qwen/Qwen3-1.7B \
+    --model openbmb/MiniCPM5-2B \
+    --draft openbmb/MiniCPM5-2B-DSpark \
     --max-num-seqs 32 \
     --max-model-len 16384 \
     --num-tokens 8 16 32 \

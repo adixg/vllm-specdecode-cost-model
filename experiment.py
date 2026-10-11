@@ -24,13 +24,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int) -> dict:
+def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int,
+                 with_draft: bool) -> dict:
     """Executed on a vLLM GPU worker via collective_rpc (one worker/GPU)."""
     import torch
+    import vllm.envs as envs
 
     runner = self.model_runner
-    if runner.speculator is not None:
-        raise RuntimeError("Run this probe WITHOUT speculative_config: target-only timing")
+    av = getattr(runner, "adaptive_verification", None)
+    if with_draft and (av is None or av.cost_tables is None):
+        raise RuntimeError("--draft given but adaptive verification built no cost table")
+    if not with_draft and runner.speculator is not None:
+        raise RuntimeError("Speculator loaded without --draft: target-only timing expected")
     if not hasattr(runner, "step_timing") or not hasattr(runner, "_dummy_run"):
         raise RuntimeError("Requires vLLM V2 runner with step_timing and _dummy_run")
 
@@ -105,8 +110,10 @@ def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int) 
                 )
                 # With no speculator, vLLM's timing collector needs an explicit
                 # close of the drafter phase to finalize the forward timing.
-                runner.step_timing.drafter_start()
-                runner.step_timing.drafter_end()
+                # With one, _dummy_run times the drafter itself.
+                if runner.speculator is None:
+                    runner.step_timing.drafter_start()
+                    runner.step_timing.drafter_end()
                 torch.cuda.synchronize()
             values = [float(s.forward_ms) for s in timings]
             if len(values) != 1 or not math.isfinite(values[0]) or values[0] <= 0:
@@ -130,8 +137,14 @@ def probe_worker(self, cells: list[dict], warmup: int, repeats: int, seed: int) 
             "stddev_ms": statistics.stdev(values) if len(values) > 1 else 0.0,
         })
 
+    # vLLM's own startup verify-cost table, indexed by target token count.
+    # It profiles _dummy_run(n, PROFILE_CONTEXT_LEN), the same shape as our rows.
     return {
         "rows": out,
+        "startup_verify_cost_ms": ([float(v) for v in av.cost_tables[1]]
+                                   if with_draft else None),
+        "profile_context_len": (envs.VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN
+                                if with_draft else None),
         "captured_token_counts": captured,
         "kv_capacity_tokens": kv_capacity,
         "max_num_reqs": runner.max_num_reqs,
@@ -176,6 +189,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--model", default="Qwen/Qwen3-1.7B")
+    p.add_argument("--draft", default=None,
+                   help="DSpark draft model; enables adaptive verification so "
+                        "vLLM's startup cost table can be compared")
+    p.add_argument("--num-speculative-tokens", type=int, default=7)
     p.add_argument("--num-tokens", nargs="+", type=int, default=[8, 16, 32])
     p.add_argument("--max-num-seqs", type=int, default=32)
     p.add_argument("--max-model-len", type=int, default=16384)
@@ -233,10 +250,16 @@ def main() -> None:
         gpu_memory_utilization=args.gpu_memory_utilization,
         enforce_eager=False,
         tensor_parallel_size=1,
+        **({"speculative_config": {
+            "method": "dspark",
+            "model": args.draft,
+            "num_speculative_tokens": args.num_speculative_tokens,
+            "enable_adaptive_verification": True,
+        }} if args.draft else {}),
     )
     responses = llm.collective_rpc(
         probe_worker,
-        args=(cells, args.warmup, args.repeats, args.seed),
+        args=(cells, args.warmup, args.repeats, args.seed, bool(args.draft)),
     )
     if len(responses) != 1:
         raise RuntimeError(f"Expected one GPU worker, got {len(responses)}")
@@ -248,6 +271,10 @@ def main() -> None:
     }
     k = fit_k([r for r in rows if r["split"] == "train"],
               baseline, args.baseline_context)
+    table = measured["startup_verify_cost_ms"]
+    if table is not None and measured["profile_context_len"] != args.baseline_context:
+        print(f"WARNING: vLLM profiled at ctx {measured['profile_context_len']}, "
+              f"baseline is ctx {args.baseline_context}", flush=True)
 
     for r in rows:
         fixed = baseline[r["num_tokens"]]
@@ -260,6 +287,9 @@ def main() -> None:
         r["context_error_pct"] = (
             100 * (r["median_ms"] - corrected) / corrected if corrected > 0 else None
         )
+        if table is not None:
+            r["table_prediction_ms"] = table[r["num_tokens"]]
+            r["table_error_ms"] = r["median_ms"] - r["table_prediction_ms"]
 
     test = [r for r in rows if r["split"] == "test"]
     fixed_rmse = rmse([r["fixed_error_ms"] for r in test])
@@ -271,6 +301,8 @@ def main() -> None:
         "test_context_rmse_ms": context_rmse,
         "test_rmse_reduction_pct": 100 * (1 - context_rmse / fixed_rmse)
         if fixed_rmse > 0 else None,
+        "test_table_rmse_ms": (rmse([r["table_error_ms"] for r in test])
+                               if table is not None else None),
     }
     payload = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -296,20 +328,23 @@ def main() -> None:
     out.write_text(json.dumps(payload, indent=2) + "\n")
     with out.with_suffix(".csv").open("w", newline="") as f:
         cols = ["split", "num_tokens", "num_reqs", "context_len", "nominal_kv_tokens",
-                "median_ms", "stddev_ms", "fixed_prediction_ms", "context_prediction_ms",
-                "fixed_error_pct", "context_error_pct"]
+                "median_ms", "stddev_ms", "table_prediction_ms", "fixed_prediction_ms",
+                "context_prediction_ms", "fixed_error_pct", "context_error_pct"]
         writer = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(sorted(rows, key=lambda r: (r["num_tokens"], r["context_len"])))
 
-    print("\n  TOKENS   CTX   SPLIT   ACTUAL(ms)  FIXED(ms)  KV-AWARE(ms)  FIXED ERR(%)")
+    print("\n  TOKENS   CTX   SPLIT   ACTUAL(ms)  TABLE(ms)  FIXED(ms)  KV-AWARE(ms)")
     for r in sorted(rows, key=lambda x: (x["num_tokens"], x["context_len"])):
+        tbl = f"{r['table_prediction_ms']:>10.3f}" if table is not None else f"{'-':>10}"
         print(f"{r['num_tokens']:>8} {r['context_len']:>5} {r['split']:>8} "
-              f"{r['median_ms']:>12.3f} {r['fixed_prediction_ms']:>10.3f} "
-              f"{r['context_prediction_ms']:>13.3f} {r['fixed_error_pct']:>13.1f}")
+              f"{r['median_ms']:>12.3f} {tbl} {r['fixed_prediction_ms']:>10.3f} "
+              f"{r['context_prediction_ms']:>13.3f}")
     print(f"\nCalibrated k: {summary['k_us_per_nominal_kv_token']:.6f} us/KV-token")
     print(f"HELD-OUT RMSE: fixed={fixed_rmse:.4f} ms, "
           f"context-aware={context_rmse:.4f} ms")
+    if table is not None:
+        print(f"HELD-OUT RMSE vs vLLM startup table: {summary['test_table_rmse_ms']:.4f} ms")
     if summary["test_rmse_reduction_pct"] is not None:
         print(f"Change in RMSE: {summary['test_rmse_reduction_pct']:+.1f}% reduction")
     print(f"Saved {out} and {out.with_suffix('.csv')}")
