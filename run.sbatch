@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=00:15:00
+#SBATCH --time=00:20:00
 #SBATCH --output=slurm-%j.out
 
 set -euo pipefail
