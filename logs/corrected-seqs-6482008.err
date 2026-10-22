@@ -1,0 +1,82 @@
+(EngineCore pid=1120017) Process EngineCore:
+(EngineCore pid=1120017) Traceback (most recent call last):
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=1120017)     self.run()
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=1120017)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1350, in run_engine_core
+(EngineCore pid=1120017)     raise e
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1315, in run_engine_core
+(EngineCore pid=1120017)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1120017)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1120017)     return func(*args, **kwargs)
+(EngineCore pid=1120017)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1073, in __init__
+(EngineCore pid=1120017)     super().__init__(
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 133, in __init__
+(EngineCore pid=1120017)     self.model_executor = executor_class(vllm_config)
+(EngineCore pid=1120017)                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1120017)     return func(*args, **kwargs)
+(EngineCore pid=1120017)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 110, in __init__
+(EngineCore pid=1120017)     self._init_executor()
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 69, in _init_executor
+(EngineCore pid=1120017)     self.driver_worker.init_device()
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/worker/worker_base.py", line 335, in init_device
+(EngineCore pid=1120017)     self.worker.init_device()  # type: ignore
+(EngineCore pid=1120017)     ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1120017)     return func(*args, **kwargs)
+(EngineCore pid=1120017)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 406, in init_device
+(EngineCore pid=1120017)     self.init_snapshot = init_snapshot = MemorySnapshot(device=self.device)
+(EngineCore pid=1120017)                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "<string>", line 13, in __init__
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/utils/mem_utils.py", line 133, in __post_init__
+(EngineCore pid=1120017)     self.measure()
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/utils/mem_utils.py", line 147, in measure
+(EngineCore pid=1120017)     self.free_memory, self.total_memory = torch.accelerator.get_memory_info(device)
+(EngineCore pid=1120017)                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017)   File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/torch/accelerator/memory.py", line 252, in get_memory_info
+(EngineCore pid=1120017)     return torch._C._accelerator_getMemoryInfo(device_index)
+(EngineCore pid=1120017)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1120017) torch.AcceleratorError: CUDA error: CUDA-capable device(s) is/are busy or unavailable
+(EngineCore pid=1120017) Search for `cudaErrorDevicesUnavailable' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+(EngineCore pid=1120017) For more detailed error information, run with CUDA_LOG_FILE=stderr
+(EngineCore pid=1120017) 
+Traceback (most recent call last):
+  File "/home/hice1/aghosh367/vllm-specdecode-cost-model/bench/serving_ab.py", line 1250, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/hice1/aghosh367/vllm-specdecode-cost-model/bench/serving_ab.py", line 1001, in main
+    llm = LLM(
+          ^^^^
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 343, in __init__
+    self.llm_engine = LLMEngine.from_engine_args(
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 179, in from_engine_args
+    return cls(
+           ^^^^
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 105, in __init__
+    self.engine_core = EngineCoreClient.make_client(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 110, in make_client
+    return SyncMPClient(vllm_config, executor_class, log_stats)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 812, in __init__
+    super().__init__(
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 609, in __init__
+    with launch_core_engines(
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1206, in launch_core_engines
+    wait_for_engine_startup(
+  File "/home/hice1/aghosh367/scratch/conda-envs/cs6222/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1286, in wait_for_engine_startup
+    raise RuntimeError(
+RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
