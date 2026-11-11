@@ -58,7 +58,9 @@ This relates to [vLLM issue #52057](https://github.com/vllm-project/vllm/issues/
 
 ## So did the correction improve throughput?
 
-**No, at least not for the serving workload I tested.**
+**Not at 64 requests, but yes at 128.**
+
+At 128 concurrent requests, the corrected model was **2.12% faster** (17 of 20 paired runs). With full drafts, a step there is 128 × 8 = 1,024 tokens, above the 512-token CUDA-graph capture limit, so it runs much slower. The stock estimate never trimmed below that limit; the corrected one trimmed to exactly 512 tokens on about a quarter of steps, keeping them on a CUDA graph. At 64 requests every step already fits within 512, and the details below show why the correction there was slightly slower.
 
 For the calibrated MiniCPM5-2B experiment, I used 64 concurrent requests, seven draft tokens per request (`spec=7`), and 128 output tokens per request. At full draft budget, a step could contain:
 
