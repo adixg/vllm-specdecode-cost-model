@@ -1,208 +1,119 @@
-# Context-Aware Verification Cost Modeling for vLLM DSpark
+# Profiling vLLM DSpark's Verification Cost Model
 
-An empirical systems study of how vLLM estimates speculative-verification cost,
-why the estimate drifts under variable sequence lengths, and whether fixing the
-estimate improves end-to-end throughput.
+I was looking into how vLLM's DSpark speculative decoding decides how many draft tokens to verify, and I noticed something interesting about its cost model: **it mainly uses the number of target tokens, not how much KV cache context those tokens need to attend to.**
 
-`Python` · `PyTorch` · `vLLM` · `CUDA Graphs` · `H100` · `Slurm`
+That seemed like a potentially important omission. Two decode batches could be verifying the same number of tokens, but one might have 512 tokens of context per request while the other has 8,192. I wanted to see how much that changes the actual GPU time, whether I could model the difference, and whether a better estimate would make DSpark faster.
 
-> **Status:** The cost-model hypothesis is validated on H100. A calibrated
-> serving A/B shows that more accurate costs change DSpark's decisions but do
-> not automatically improve throughput. An exact-token context sweep is ready
-> to test how that result changes across input lengths.
+I ran the experiments on an NVIDIA H100 using vLLM's V2 runner, CUDA graphs, and Qwen3-1.7B / MiniCPM5-2B.
 
-## Why this project exists
+## The problem
 
-DSpark's adaptive verifier decides how many draft tokens the target model should
-verify in each decode step. vLLM currently prices that choice with a startup
-profile indexed primarily by the number of new target tokens:
+DSpark's adaptive verifier uses a startup profile to estimate the cost of a target-model verification step. Simplifying slightly, the estimate looks like:
 
 ```text
-stock_cost = f(num_target_tokens)
+estimated_cost = f(num_target_tokens)
 ```
 
-That treats two batches as equivalent when they verify the same number of new
-tokens—even if one batch has far more historical KV context to read.
+Here, `num_target_tokens` includes both normal decode positions and the draft tokens selected for verification. The problem is that the profile is measured at a particular context length, so the same entry gets reused for batches with very different sequence lengths.
 
-This project tests the missing dimension and finds that, in the CUDA-graph
-regime, target time is well described by:
+My hypothesis was that the total context across active requests should also matter. In the CUDA-graph regime I tested, an additive model worked well:
 
 ```text
-cost ~= f(num_target_tokens) + k * sum(sequence_lengths)
+verification_time ≈ f(num_target_tokens) + k * sum(sequence_lengths)
 ```
 
-Where:
-
-- `num_target_tokens` is the new verification work in the current step: normal
-  decode positions plus selected draft candidates.
-- `sum(sequence_lengths)` is the aggregate historical context across active
-  requests.
-- `k` is a model- and hardware-specific KV-read cost.
-
-The deployed correction is relative to the context already embedded in
-vLLM's startup profile:
+Since vLLM's original profile already includes some KV-cache work, I used the *difference* from the profiled context rather than adding the entire term again:
 
 ```text
 corrected_cost[t] = stock_cost[t]
                   + k * (real_sum_seq_lens - profiled_sum_seq_lens[t])
 ```
 
-## Headline findings
+`k` is the extra cost per KV token for that model and GPU configuration. It needs to be measured; it isn't a universal constant.
 
-| Finding | Evidence |
-|---|---|
-| Sequence length is a missing cost feature | At fixed target-token count, measured latency changes substantially with aggregate KV context. |
-| The error is predictable | On held-out contexts, a one-scalar additive model reduces RMSE from `5.779 ms` to `0.496 ms`—an **11.6× reduction**. |
-| The sign depends on context | Below the profile context, stock overpredicts; above it, stock underpredicts by as much as **202%** in the tested Qwen/H100 sweep. |
-| `k` is model-specific | H100 fits give `0.0356 us/KV-token` for Qwen3-1.7B and `0.0137 us/KV-token` for MiniCPM5-2B. Transferring `k` across models is invalid. |
-| Accurate prediction changes real decisions | In the calibrated MiniCPM/spec-7 A/B, decode ceiling selection fell from `97.98%` to `89.17%`. |
-| Accurate prediction is not sufficient for speedup | The correction was **0.365% slower** on the tested workload because draft trimming produced 13 additional decode batches across 20 paired runs. |
-| The budget policy itself is miscalibrated | Against a policy that ignores the cost model and always admits every draft token, stock is **1.1% slower at 64** concurrent requests (20/20 paired rounds) and **2.8% slower at 128** (19/20). Marginally better at 16, break-even at 256. |
-| Above ~257 requests the cost model is not in charge | `max_draft_budget` is capped by `get_max_chunk_logits(vocab_size)` = 2056 on this model, so the cap binds whenever `7n > 2056 - n`. At 512 requests it sets the budget to 1,544 of a possible 3,584. |
+## What I found
 
-## The context-dependent sign flip
+| Experiment | Result |
+| --- | --- |
+| Predicting verification time on held-out contexts | RMSE dropped from **5.779 ms to 0.496 ms** (11.6x lower) |
+| Context shorter than vLLM's profile | The stock estimate generally **overpredicts** |
+| Context longer than vLLM's profile | The stock estimate **underpredicts**, by up to 202% in the tested Qwen/H100 sweep |
+| Fitted `k` on H100, Qwen3-1.7B | **0.0356 µs/KV-token** |
+| Fitted `k` on H100, MiniCPM5-2B | **0.0137 µs/KV-token** |
+| Calibrated serving A/B, MiniCPM5-2B, 64 requests, `spec=7` | The corrected model was **0.365% slower**, not faster |
 
-The startup table represents one fixed profile context. Real serving batches
-can fall on either side of it:
+The first result was what I expected: sequence length does affect verification cost, and one extra feature explains a lot of the prediction error. The last result was more interesting.
 
-```text
-real context < profile context  -> stock overpredicts
-real context > profile context  -> stock underpredicts
-```
+### The error actually changes direction
 
-The H100 context-straddle experiment confirms that prediction: error crosses
-zero at the profile point and reverses direction beyond it.
+With shorter contexts, the original profile assumes more KV-cache work than is actually needed. With longer contexts, it assumes less. The prediction error crosses zero near the context used during profiling.
 
-<p align="center">
-  <img src="results/h100_ctx_straddle_hexbin.png" width="720" alt="Expected versus measured verification cost across contexts below and above the profiling point">
-</p>
+![Verification cost across context lengths](results/h100_ctx_straddle_hexbin.png)
 
-## Comparison with real decode traces
+I also compared the estimates with real decode steps, grouped by target-token count and request count. In the short-context traces, the stock estimates were generally too high even as the error increased with batch size.
 
-The grouped real-step view mirrors the target-token and request-count panels in
-[vLLM issue #52057](https://github.com/vllm-project/vllm/issues/52057). In this
-repository's short-context traces, prediction error grows with target shape and
-request count, but measured time stays below the startup estimate because the
-active contexts are shorter than the profile context.
+![Estimated vs measured cost during real decode](results/h100_grouped_real_decode.png)
 
-<p align="center">
-  <img src="results/h100_grouped_real_decode.png" width="900" alt="Expected and measured target time grouped by target-token count and request batch size">
-</p>
+This relates to [vLLM issue #52057](https://github.com/vllm-project/vllm/issues/52057), which looks at verification-cost estimation under different workloads.
 
-This is the same structural limitation—one cost per target-token count cannot
-represent variable sequence lengths—but at a different operating point.
+## So did the correction improve throughput?
 
-## Why the accurate cost was slightly slower
+**No, at least not for the serving workload I tested.**
 
-With 64 requests and `spec=7`, a full decode step can contain:
+For the calibrated MiniCPM5-2B experiment, I used 64 concurrent requests, seven draft tokens per request (`spec=7`), and 128 output tokens per request. At full draft budget, a step could contain:
 
 ```text
-64 normal decode positions + 64 * 7 draft candidates = 512 target tokens
+64 decode tokens + 64 * 7 draft tokens = 512 target tokens
 ```
 
-Stock vLLM overestimated the typical verification step:
+The stock cost estimate for a typical step was about **8.622 ms**, versus **6.030 ms** with the correction. This changed DSpark's decisions: it was less likely to keep the maximum number of draft tokens when verification appeared cheaper.
 
-```text
-stock estimate       8.622 ms
-corrected estimate   6.030 ms
-median adjustment   -2.585 ms
-```
+That sounds reasonable, except removing draft tokens can mean that some requests need another target-model pass later. Across 20 paired runs with matching output-token counts:
 
-When verification appeared expensive, the stock policy kept almost every
-available draft token to amortize the target pass. Once verification appeared
-cheaper, the corrected policy sometimes removed 8 or 16 candidates. That saved
-draft-model work but left some requests active for another batched target pass.
+| Metric | Stock model | Corrected model |
+| --- | ---: | ---: |
+| Decode decisions | 347 | 360 |
+| Median throughput | 10,971.9 tokens/s | 10,923.5 tokens/s |
 
-Across 20 paired rounds with identical output:
+The corrected model ended up doing **13 additional decode batches** and had **0.3649% lower throughput** on average across paired runs.
 
-```text
-stock decode decisions       347
-corrected decode decisions   360
-additional decode batches     13
+That was the main thing I learned from this experiment: **predicting the cost of a step more accurately is not the same as making a better scheduling decision.** The verifier also needs to account for what trimming drafts does to future decode iterations.
 
-stock median throughput       10,971.9 tokens/s
-corrected median throughput   10,923.5 tokens/s
-paired mean delta             -0.3649%
-```
+I tried a simpler comparison too: what if we ignored the adaptive cost model and admitted every available draft token? In the tested setup, stock DSpark was **1.1% slower at 64 requests** and **2.8% slower at 128 requests** than that baseline. It was slightly better at 16 requests and roughly tied at 256. At high concurrency, a separate logits-budget cap also starts limiting the draft budget, so the cost model is no longer the only thing determining the choice.
 
-The result is not “accurate costs are bad.” It shows that prediction and
-decision quality are separate problems: the existing objective does not fully
-price the future cost of needing another decode iteration.
+## How I benchmarked it
 
-## Experimental design
+A big part of this project was making sure I was actually measuring GPU execution time and not compilation, warmup, or differences in the test setup.
 
-The benchmarks include safeguards for common GPU-measurement failures:
+- Profiled target passes at different target-token counts, request counts, and context lengths.
+- Warmed up **all** execution shapes before timing to avoid counting JIT compilation and autotuning as runtime.
+- Interleaved and reversed measurement order to reduce clock and thermal drift.
+- Kept CUDA-graph and eager results separate.
+- Calibrated `k` inside the same live DSpark engine used for the serving A/B test.
+- Alternated stock and corrected runs, checked that they generated the same number of tokens, and excluded clamped cost measurements.
 
-- Warm every execution shape before timing any shape, preventing JIT and
-  autotuning from being assigned to one configuration.
-- Interleave and reverse measurement order to distribute thermal and clock
-  drift.
-- Separate CUDA-graph and eager regimes rather than averaging incompatible
-  behavior.
-- Calibrate `k` inside the same live DSpark engine used by the A/B.
-- Reconstruct vLLM's actual profile baseline, including max-length capping,
-  query tokens, CUDA-graph padding, and eager-tail interpolation.
-- Alternate stock/corrected order within paired rounds.
-- Require equal output-token counts and reject selected costs that hit the
-  minimum positive-value clamp.
+One early benchmark appeared to show a **28% difference** from an allocation change. After fixing the warmup and measurement order, that difference fell to **0.21%**. That was a good reminder of how easy it is to benchmark the wrong thing on a GPU.
 
-One early allocation experiment demonstrated why these controls matter:
-shape-specific compilation initially created a false 28% difference. After
-global warmup and interleaved timing, the difference fell to 0.21%.
+## Running the experiments
 
-## Repository guide
-
-| Path | Purpose |
-|---|---|
-| [`bench/verify_cost_probe.py`](bench/verify_cost_probe.py) | Controlled target-cost sweeps over token count, request count, and context. |
-| [`bench/fit_cost_model.py`](bench/fit_cost_model.py) | Fits and validates additive versus max-like context models. |
-| [`bench/marginal_cost_probe.py`](bench/marginal_cost_probe.py) | Tests whether cost depends on which request owns an extra draft token. |
-| [`bench/step_trace.py`](bench/step_trace.py) | Captures predicted and measured target time during real generation. |
-| [`bench/serving_ab.py`](bench/serving_ab.py) | In-engine calibration, correction injection, paired serving A/B, and exact-token sweep. |
-| [`bench/plot_drift.py`](bench/plot_drift.py) | Expected-versus-measured drift visualization. |
-| [`bench/plot_grouped_drift.py`](bench/plot_grouped_drift.py) | Issue-compatible grouped target-token and request-count panels. |
-| [`pace/`](pace/) | Reproducible Slurm launchers for H100 experiments. |
-| [`results/`](results/) | Raw JSON measurements and generated figures. |
-| [`FINDINGS.md`](FINDINGS.md) | Full experiment log, corrections, negative results, and limitations. |
-| [`FUTURE_PLAN.md`](FUTURE_PLAN.md) | Next experiments: quantized KV cache and `k`, the E13 concurrency band, cross-GPU calibration (H200, L40S, MI300X). |
-| [`SETUP.md`](SETUP.md) | PACE environment, the Hopper/FA3 constraint, scheduling, and how to read `_dummy_run` results. |
-
-## Reproducing the main experiment
-
-The final sweep targets Hopper because adaptive verification uses the
-FlashAttention 3 CUDA-graph path in this configuration. It requires cached
-model weights, the pinned vLLM environment described in
-[`SETUP.md`](SETUP.md), and one H100-class GPU. The checked-in Slurm scripts
-also contain cluster-specific module and Conda paths that should be adapted for
-another environment.
+The main serving experiments use an H100 with vLLM 0.28 and its V2 model runner. The Slurm files under `pace/` are configured for my cluster, so you will need to update the environment paths and cached model locations if you run them elsewhere.
 
 ```bash
 git clone https://github.com/adixg/vllm-specdecode-cost-model.git
 cd vllm-specdecode-cost-model
-
 sbatch pace/run_serving_context_sweep.sbatch
 ```
 
-The job performs one in-engine calibration and then compares stock versus
-corrected scheduling at exact homogeneous input lengths:
+The context sweep is set up to compare stock and corrected scheduling using:
 
 ```text
-64, 512, 1024, 2048, 3000 input tokens
-64 simultaneous requests
-128 generated tokens per request
-20 paired stock/corrected rounds per length
+Input lengths:        64, 512, 1024, 2048, 3000 tokens
+Concurrent requests:  64
+Output length:        128 tokens/request
+Trials:               20 paired rounds per input length
 ```
 
-Expected outputs:
-
-```text
-results/minicpm_h100_dspark_k_spec7_context_sweep.json
-results/h100_exact_context_sweep_spec7.json
-logs/serving-ctx-sweep-<job-id>.out
-logs/serving-ctx-sweep-<job-id>.err
-```
-
-To regenerate the grouped plots from existing data:
+To regenerate the grouped real-decode plot from the saved traces:
 
 ```bash
 .venv/bin/python bench/plot_grouped_drift.py \
@@ -215,27 +126,15 @@ To regenerate the grouped plots from existing data:
   --out results/h100_grouped_real_decode.png
 ```
 
-## Scope and limitations
+## Repository structure
 
-- The strongest accuracy results cover two small language models on one H100
-  generation; `k` must be recalibrated for other model/GPU combinations.
-- Controlled probes use synthetic, uniform contexts to isolate causality.
-- The calibrated end-to-end result is scoped to MiniCPM5-2B, DSpark `spec=7`,
-  64 simultaneous requests, and 128 generated tokens per request.
-- Earlier uncalibrated serving JSON files are retained for provenance but are
-  explicitly marked as superseded in [`FINDINGS.md`](FINDINGS.md).
-- Continuous arrivals and broader model coverage remain future work.
-
-## Project takeaway
-
-This project began with a profiling discrepancy and ended with a broader
-systems result:
-
-```text
-Better measurement does not guarantee a better policy.
-```
-
-Aggregate context makes verification cost substantially more predictable.
-Once that measurement error is removed, the next bottleneck is the adaptive
-scheduler's objective—specifically, how it values saved draft work against the
-possibility of an additional target-model iteration.
+| File | What it does |
+| --- | --- |
+| [`bench/verify_cost_probe.py`](bench/verify_cost_probe.py) | Measures verification cost while varying batch size, target tokens, and context length |
+| [`bench/fit_cost_model.py`](bench/fit_cost_model.py) | Fits and evaluates candidate cost models |
+| [`bench/marginal_cost_probe.py`](bench/marginal_cost_probe.py) | Tests the cost of assigning additional draft tokens to different requests |
+| [`bench/step_trace.py`](bench/step_trace.py) | Records predicted and measured times during generation |
+| [`bench/serving_ab.py`](bench/serving_ab.py) | Calibrates the correction and runs paired serving comparisons |
+| [`bench/plot_drift.py`](bench/plot_drift.py), [`bench/plot_grouped_drift.py`](bench/plot_grouped_drift.py) | Generates plots |
+| [`pace/`](pace/) | Slurm scripts for the H100 experiments |
+| [`results/`](results/) | Raw measurements and figures |
