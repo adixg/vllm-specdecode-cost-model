@@ -16,3 +16,11 @@ learning-records/
 assets/
 contributions.md
 pyrightconfig.json
+
+# Private write-ups, kept local only
+FINDINGS.md
+FUTURE_PLAN.md
+SETUP.md
+
+# Slurm job logs
+slurm-*.out
